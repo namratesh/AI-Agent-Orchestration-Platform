@@ -46,7 +46,7 @@ class WorkflowNode(BaseModel):
 class WorkflowEdge(BaseModel):
     source_node_id: str
     target_node_id: str
-    condition: Optional[str] = None  # Python expression — not evaluated yet
+    condition: Optional[str] = None
 
 
 class WorkflowDefinition(BaseModel):
@@ -94,6 +94,22 @@ class CheckpointResponse(BaseModel):
     timestamp: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── Telegram ──────────────────────────────────────────────────────────────────
+
+class TelegramChatMapping(BaseModel):
+    chat_id: str
+    workflow_id: UUID
+    username: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class TelegramChatMappingCreate(BaseModel):
+    chat_id: str
+    workflow_id: UUID
+    username: Optional[str] = None
 
 
 # ── Requests / Responses ──────────────────────────────────────────────────────

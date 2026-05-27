@@ -4,13 +4,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import (
-    Column, DateTime, Integer, Numeric, String, Text, create_engine
-)
+from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from config import settings
+from core.config import settings
 
 engine = create_engine(
     settings.DATABASE_URL,
@@ -72,9 +70,18 @@ class WorkflowExecutionCheckpointORM(Base):
     timestamp   = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
+class TelegramChatMappingORM(Base):
+    __tablename__ = "telegram_chat_mappings"
+
+    chat_id     = Column(Text, primary_key=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    username    = Column(Text, nullable=True)
+    created_at  = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
 # ── Session dependency ────────────────────────────────────────────────────────
 
-def get_db() -> Session:
+def get_db():
     db = SessionLocal()
     try:
         yield db
@@ -82,17 +89,13 @@ def get_db() -> Session:
         db.close()
 
 
-# ── Agent helpers ─────────────────────────────────────────────────────────────
+# ── Agent ─────────────────────────────────────────────────────────────────────
 
 def create_agent(db: Session, *, name: str, role: str, system_prompt: str,
                  model: str, provider: str, tools: list, config: dict) -> AgentORM:
-    agent = AgentORM(
-        name=name, role=role, system_prompt=system_prompt,
-        model=model, provider=provider, tools=tools, config=config,
-    )
-    db.add(agent)
-    db.commit()
-    db.refresh(agent)
+    agent = AgentORM(name=name, role=role, system_prompt=system_prompt,
+                     model=model, provider=provider, tools=tools, config=config)
+    db.add(agent); db.commit(); db.refresh(agent)
     return agent
 
 
@@ -104,14 +107,12 @@ def list_agents(db: Session) -> List[AgentORM]:
     return db.query(AgentORM).order_by(AgentORM.created_at.desc()).all()
 
 
-# ── Workflow helpers ──────────────────────────────────────────────────────────
+# ── Workflow ──────────────────────────────────────────────────────────────────
 
 def create_workflow(db: Session, *, name: str, definition: Dict[str, Any]) -> WorkflowORM:
-    workflow = WorkflowORM(name=name, definition=definition)
-    db.add(workflow)
-    db.commit()
-    db.refresh(workflow)
-    return workflow
+    wf = WorkflowORM(name=name, definition=definition)
+    db.add(wf); db.commit(); db.refresh(wf)
+    return wf
 
 
 def get_workflow(db: Session, workflow_id: UUID) -> Optional[WorkflowORM]:
@@ -122,20 +123,16 @@ def list_workflows(db: Session) -> List[WorkflowORM]:
     return db.query(WorkflowORM).order_by(WorkflowORM.created_at.desc()).all()
 
 
-# ── Message helpers ───────────────────────────────────────────────────────────
+# ── Message ───────────────────────────────────────────────────────────────────
 
 def save_message(db: Session, *, workflow_id: Optional[UUID] = None,
                  sender_id: Optional[UUID] = None, receiver_id: Optional[UUID] = None,
                  content: str, message_type: str = "text",
                  tokens_used: int = 0, cost: float = 0.0) -> MessageORM:
-    msg = MessageORM(
-        workflow_id=workflow_id, sender_id=sender_id, receiver_id=receiver_id,
-        content=content, message_type=message_type,
-        tokens_used=tokens_used, cost=cost,
-    )
-    db.add(msg)
-    db.commit()
-    db.refresh(msg)
+    msg = MessageORM(workflow_id=workflow_id, sender_id=sender_id,
+                     receiver_id=receiver_id, content=content,
+                     message_type=message_type, tokens_used=tokens_used, cost=cost)
+    db.add(msg); db.commit(); db.refresh(msg)
     return msg
 
 
@@ -147,32 +144,57 @@ def get_messages(db: Session, workflow_id: Optional[UUID] = None,
     return q.order_by(MessageORM.timestamp.desc()).limit(limit).all()
 
 
-# ── Checkpoint helpers ────────────────────────────────────────────────────────
+# ── Checkpoint ────────────────────────────────────────────────────────────────
 
 def save_checkpoint(db: Session, *, workflow_id: UUID, node_id: str,
                     state: Dict[str, Any]) -> WorkflowExecutionCheckpointORM:
-    cp = WorkflowExecutionCheckpointORM(
-        workflow_id=workflow_id, node_id=node_id, state=state,
-    )
-    db.add(cp)
-    db.commit()
-    db.refresh(cp)
+    cp = WorkflowExecutionCheckpointORM(workflow_id=workflow_id, node_id=node_id, state=state)
+    db.add(cp); db.commit(); db.refresh(cp)
     return cp
 
 
 def get_checkpoint(db: Session, workflow_id: UUID) -> Optional[WorkflowExecutionCheckpointORM]:
-    return (
-        db.query(WorkflowExecutionCheckpointORM)
-        .filter(WorkflowExecutionCheckpointORM.workflow_id == workflow_id)
-        .order_by(WorkflowExecutionCheckpointORM.timestamp.desc())
-        .first()
-    )
+    return (db.query(WorkflowExecutionCheckpointORM)
+            .filter(WorkflowExecutionCheckpointORM.workflow_id == workflow_id)
+            .order_by(WorkflowExecutionCheckpointORM.timestamp.desc()).first())
 
 
 def list_checkpoints(db: Session, workflow_id: UUID) -> List[WorkflowExecutionCheckpointORM]:
-    return (
-        db.query(WorkflowExecutionCheckpointORM)
-        .filter(WorkflowExecutionCheckpointORM.workflow_id == workflow_id)
-        .order_by(WorkflowExecutionCheckpointORM.timestamp.asc())
-        .all()
-    )
+    return (db.query(WorkflowExecutionCheckpointORM)
+            .filter(WorkflowExecutionCheckpointORM.workflow_id == workflow_id)
+            .order_by(WorkflowExecutionCheckpointORM.timestamp.asc()).all())
+
+
+# ── Telegram chat mapping ─────────────────────────────────────────────────────
+
+def set_chat_mapping(db: Session, *, chat_id: str, workflow_id: UUID,
+                     username: Optional[str] = None) -> TelegramChatMappingORM:
+    existing = db.query(TelegramChatMappingORM).filter(
+        TelegramChatMappingORM.chat_id == chat_id).first()
+    if existing:
+        existing.workflow_id = workflow_id
+        existing.username = username
+    else:
+        existing = TelegramChatMappingORM(chat_id=chat_id, workflow_id=workflow_id, username=username)
+        db.add(existing)
+    db.commit(); db.refresh(existing)
+    return existing
+
+
+def get_chat_mapping(db: Session, chat_id: str) -> Optional[TelegramChatMappingORM]:
+    return db.query(TelegramChatMappingORM).filter(
+        TelegramChatMappingORM.chat_id == chat_id).first()
+
+
+def list_chat_mappings(db: Session) -> List[TelegramChatMappingORM]:
+    return db.query(TelegramChatMappingORM).order_by(
+        TelegramChatMappingORM.created_at.desc()).all()
+
+
+def delete_chat_mapping(db: Session, chat_id: str) -> bool:
+    row = db.query(TelegramChatMappingORM).filter(
+        TelegramChatMappingORM.chat_id == chat_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True

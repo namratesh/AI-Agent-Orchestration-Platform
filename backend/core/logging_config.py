@@ -1,15 +1,12 @@
 import logging
 import structlog
-from config import settings
+from core.config import settings
 
 
 def setup_logging() -> None:
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
 
-    logging.basicConfig(
-        format="%(message)s",
-        level=log_level,
-    )
+    logging.basicConfig(format="%(message)s", level=log_level)
 
     structlog.configure(
         processors=[

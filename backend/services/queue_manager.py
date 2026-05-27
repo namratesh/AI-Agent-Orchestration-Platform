@@ -4,8 +4,8 @@ from typing import Optional
 
 import redis
 
-from config import settings
-from logging_config import get_logger
+from core.config import settings
+from core.logging_config import get_logger
 
 logger = get_logger(__name__)
 

@@ -1,18 +1,16 @@
 from __future__ import annotations
-import uuid
 from typing import Any, Dict, TypedDict
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
-from config import settings
-from db import SessionLocal, get_agent, save_message
-from logging_config import get_logger
+from core.config import settings
+from core.logging_config import get_logger
+from db.db import SessionLocal, get_agent, save_message
 
 logger = get_logger(__name__)
 
-# Cost per 1K tokens (output) by provider/model — approximate
 COST_PER_1K: Dict[str, float] = {
     "openai": 0.03,
     "openrouter": 0.002,
@@ -47,8 +45,6 @@ class LLMFactory:
         raise ValueError(f"Unknown provider: {provider}")
 
 
-# ── Tool ──────────────────────────────────────────────────────────────────────
-
 def web_search(query: str) -> str:
     return (
         f"[mock search results for '{query}'] "
@@ -57,8 +53,6 @@ def web_search(query: str) -> str:
         "3. OpenRouter provides unified LLM access."
     )
 
-
-# ── LangGraph state ───────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
     task: str
@@ -81,24 +75,21 @@ def call_llm_node(llm, state: AgentState) -> AgentState:
         usage = response.response_metadata.get("token_usage") or {}
         tokens = usage.get("total_tokens", 0)
     if not tokens:
-        tokens = len(content.split()) * 2  # rough fallback estimate
+        tokens = len(content.split()) * 2
 
     return {**state, "result": content, "tokens_used": tokens}
 
 
 def tool_node(state: AgentState) -> AgentState:
-    tool_calls = state.get("tool_calls", [])
     results = []
-    for call in tool_calls:
+    for call in state.get("tool_calls", []):
         if call.get("name") == "web_search":
             results.append(web_search(call.get("args", {}).get("query", "")))
     return {**state, "tool_calls": results}
 
 
 def should_use_tool(state: AgentState) -> str:
-    if state.get("tool_calls"):
-        return "tool"
-    return END
+    return "tool" if state.get("tool_calls") else END
 
 
 def build_graph(llm):
@@ -110,8 +101,6 @@ def build_graph(llm):
     graph.add_edge("tool", END)
     return graph.compile()
 
-
-# ── AgentExecutor ─────────────────────────────────────────────────────────────
 
 class AgentExecutor:
     def execute(self, agent_id: UUID, task: str, trace_id: str) -> Dict[str, Any]:
@@ -127,7 +116,6 @@ class AgentExecutor:
             llm = LLMFactory.get_llm(agent_row.model, agent_row.provider)
             graph = build_graph(llm)
 
-            # Check if web_search is in the agent's tools
             tool_calls = []
             if "web_search" in (agent_row.tools or []):
                 tool_calls = [{"name": "web_search", "args": {"query": task}}]
@@ -150,27 +138,13 @@ class AgentExecutor:
             tokens = final_state["tokens_used"]
             cost = round((tokens / 1000) * COST_PER_1K.get(agent_row.provider, 0.002), 8)
 
-            save_message(
-                db,
-                sender_id=agent_id,
-                content=final_state["result"],
-                message_type="agent_response",
-                tokens_used=tokens,
-                cost=cost,
-            )
+            save_message(db, sender_id=agent_id, content=final_state["result"],
+                         message_type="agent_response", tokens_used=tokens, cost=cost)
 
-            log.info(
-                "agent_execute_end",
-                tokens=tokens,
-                cost=cost,
-                result_preview=final_state["result"][:120],
-            )
+            log.info("agent_execute_end", tokens=tokens, cost=cost,
+                     result_preview=final_state["result"][:120])
 
-            return {
-                "result": final_state["result"],
-                "tokens_used": tokens,
-                "cost": cost,
-            }
+            return {"result": final_state["result"], "tokens_used": tokens, "cost": cost}
         finally:
             db.close()
 

@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS workflow_execution_checkpoints (
     timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS telegram_chat_mappings (
+    chat_id     TEXT PRIMARY KEY,
+    workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    username    TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_workflow_id      ON messages(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp        ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_agents_provider           ON agents(provider);

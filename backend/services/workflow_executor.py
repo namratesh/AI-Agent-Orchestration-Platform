@@ -2,10 +2,10 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from db import SessionLocal, get_workflow, save_checkpoint
-from executor import agent_executor
-from logging_config import get_logger
-import queue_manager
+from core.logging_config import get_logger
+from db.db import SessionLocal, get_workflow, save_checkpoint
+from services.executor import agent_executor
+from services.queue_manager import publish_result, consume_task
 
 logger = get_logger(__name__)
 
@@ -34,51 +34,32 @@ class WorkflowExecutor:
                 log.info("node_executing", node_id=current_node_id, node_type=node_type)
 
                 if node_type != "AGENT" or not node.get("agent_id"):
-                    # CONDITION and HUMAN_APPROVAL are pass-through for now
-                    log.info("node_skipped", node_id=current_node_id, reason="non_agent_or_no_agent_id")
+                    log.info("node_skipped", node_id=current_node_id,
+                             reason="non_agent_or_no_agent_id")
                     final_result = current_input
                     current_node_id = _next_node(edges, current_node_id)
                     continue
 
-                agent_id = UUID(str(node["agent_id"]))
-                outcome = agent_executor.execute(agent_id, current_input, trace_id)
+                node_agent_id = UUID(str(node["agent_id"]))
+                outcome = agent_executor.execute(node_agent_id, current_input, trace_id)
 
-                save_checkpoint(
-                    db,
-                    workflow_id=workflow_id,
-                    node_id=current_node_id,
-                    state={
-                        "input": current_input,
-                        "output": outcome["result"],
-                        "tokens_used": outcome["tokens_used"],
-                        "cost": outcome["cost"],
-                    },
-                )
+                save_checkpoint(db, workflow_id=workflow_id, node_id=current_node_id,
+                                state={"input": current_input, "output": outcome["result"],
+                                       "tokens_used": outcome["tokens_used"],
+                                       "cost": outcome["cost"]})
 
-                log.info(
-                    "node_executed",
-                    node_id=current_node_id,
-                    agent_id=str(agent_id),
-                    tokens=outcome["tokens_used"],
-                    cost=outcome["cost"],
-                )
+                log.info("node_executed", node_id=current_node_id,
+                         agent_id=str(node_agent_id),
+                         tokens=outcome["tokens_used"], cost=outcome["cost"])
 
                 next_node_id = _next_node(edges, current_node_id)
 
                 if next_node_id:
-                    # Publish result to Redis queue; immediately consume to simulate
-                    # async worker handoff between nodes.
-                    queue_manager.publish_result(
-                        f"workflow:{workflow_id}",
-                        {
-                            "node_id": current_node_id,
-                            "next_node_id": next_node_id,
-                            "result": outcome["result"],
-                        },
-                    )
-                    consumed = queue_manager.consume_task(
-                        f"workflow:{workflow_id}", timeout=30
-                    )
+                    publish_result(f"workflow:{workflow_id}",
+                                   {"node_id": current_node_id,
+                                    "next_node_id": next_node_id,
+                                    "result": outcome["result"]})
+                    consumed = consume_task(f"workflow:{workflow_id}", timeout=30)
                     current_input = consumed["result"] if consumed else outcome["result"]
                     log.info("node_result", node_id=current_node_id, next_node=next_node_id)
                 else:

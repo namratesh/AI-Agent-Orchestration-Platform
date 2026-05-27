@@ -19,6 +19,8 @@ class Settings(BaseSettings):
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
+    TELEGRAM_BOT_TOKEN: str = ""
+
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/agent_db"
     REDIS_URL: str = "redis://localhost:6379"
 
