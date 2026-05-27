@@ -1,22 +1,44 @@
 from __future__ import annotations
+import asyncio
 import uuid
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import make_asgi_app
 
-from api import agents, workflows, telegram
+from api import agents, executions, logs, stats, telegram, workflows
 from core.logging_config import get_logger, setup_logging
+from db.db import engine
+from instrumentation import setup_otel
+from services.log_broadcaster import log_broadcaster
 
 app = FastAPI(title="AI Agent Orchestration Platform")
 logger = get_logger(__name__)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Prometheus metrics endpoint — populated by OTel PrometheusMetricReader
+app.mount("/metrics", make_asgi_app())
+
 app.include_router(agents.router)
 app.include_router(workflows.router)
 app.include_router(telegram.router)
+app.include_router(logs.router)
+app.include_router(executions.router)
+app.include_router(stats.router)
 
 
 @app.on_event("startup")
 async def startup():
     setup_logging()
+    setup_otel(app=app, engine=engine)
+    log_broadcaster.set_loop(asyncio.get_event_loop())
     logger.info("app_startup", message="AI Agent Orchestration Platform starting")
 
 

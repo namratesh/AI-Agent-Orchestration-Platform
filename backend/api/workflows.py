@@ -46,7 +46,12 @@ def execute_workflow_endpoint(workflow_id: UUID, payload: ExecuteRequest,
                                         workflow_id=str(workflow_id), task=payload.task)
     outcome = workflow_executor.execute(workflow_id, payload.task, trace_id)
     return WorkflowExecuteResponse(workflow_id=workflow_id, task=payload.task,
-                                   result=outcome["result"], trace_id=trace_id)
+                                   result=outcome["result"],
+                                   tokens_used=outcome.get("tokens_used", 0),
+                                   cost=outcome.get("cost", 0.0),
+                                   trace_id=trace_id,
+                                   execution_id=outcome.get("execution_id"),
+                                   execution_time_seconds=outcome.get("execution_time_seconds", 0.0))
 
 
 @router.get("/{workflow_id}/checkpoints", response_model=List[CheckpointResponse])

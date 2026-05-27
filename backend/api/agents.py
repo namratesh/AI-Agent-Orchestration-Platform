@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
-from db.db import create_agent, get_agent, get_db, list_agents
+from db.db import create_agent, delete_agent, get_agent, get_db, list_agents
 from schemas.models import Agent, AgentCreate, ExecuteRequest, ExecuteResponse
 from services.executor import agent_executor
 
@@ -34,6 +34,13 @@ def get_agent_endpoint(agent_id: UUID, db: Session = Depends(get_db)):
     if row is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     return Agent.model_validate(row)
+
+
+@router.delete("/{agent_id}", status_code=204)
+def delete_agent_endpoint(agent_id: UUID, db: Session = Depends(get_db)):
+    if not delete_agent(db, agent_id):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    logger.info("agent_deleted", agent_id=str(agent_id))
 
 
 @router.post("/{agent_id}/execute", response_model=ExecuteResponse)
