@@ -1,3 +1,5 @@
+"""Pydantic schemas and data validation models for the API."""
+
 from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
@@ -5,13 +7,13 @@ from uuid import UUID
 import uuid
 from pydantic import BaseModel, Field
 
-
 AgentConfig = Dict[str, Any]
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
 
 class Agent(BaseModel):
+    """Pydantic model representing a registered agent."""
     id: UUID = Field(default_factory=uuid.uuid4)
     name: str
     role: str
@@ -25,6 +27,7 @@ class Agent(BaseModel):
 
 
 class AgentCreate(BaseModel):
+    """Pydantic schema for creating a new agent."""
     name: str
     role: str
     system_prompt: str
@@ -37,6 +40,7 @@ class AgentCreate(BaseModel):
 # ── Workflow ──────────────────────────────────────────────────────────────────
 
 class WorkflowNode(BaseModel):
+    """Schema representing a single node in a workflow graph."""
     id: str
     type: Literal["AGENT", "CONDITION", "HUMAN_APPROVAL"]
     agent_id: Optional[UUID] = None
@@ -44,18 +48,21 @@ class WorkflowNode(BaseModel):
 
 
 class WorkflowEdge(BaseModel):
+    """Schema representing a directed edge connecting nodes in a workflow."""
     source_node_id: str
     target_node_id: str
     condition: Optional[str] = None  # Python expression — not evaluated yet
 
 
 class WorkflowDefinition(BaseModel):
+    """Schema representing the full structure of a workflow's nodes and edges."""
     nodes: List[WorkflowNode]
     edges: List[WorkflowEdge]
     start_node_id: str
 
 
 class Workflow(BaseModel):
+    """Pydantic model representing a defined multi-agent workflow."""
     id: UUID = Field(default_factory=uuid.uuid4)
     name: str
     definition: WorkflowDefinition
@@ -64,6 +71,7 @@ class Workflow(BaseModel):
 
 
 class WorkflowCreate(BaseModel):
+    """Pydantic schema for creating a new workflow."""
     name: str
     definition: WorkflowDefinition
 
@@ -71,6 +79,7 @@ class WorkflowCreate(BaseModel):
 # ── Message ───────────────────────────────────────────────────────────────────
 
 class Message(BaseModel):
+    """Pydantic model representing a captured execution log message."""
     id: UUID = Field(default_factory=uuid.uuid4)
     workflow_id: Optional[UUID] = None
     sender_id: Optional[UUID] = None
@@ -87,6 +96,7 @@ class Message(BaseModel):
 # ── Checkpoint ────────────────────────────────────────────────────────────────
 
 class CheckpointResponse(BaseModel):
+    """Pydantic schema for representing a saved workflow node checkpoint."""
     id: UUID
     workflow_id: UUID
     node_id: str
@@ -98,11 +108,27 @@ class CheckpointResponse(BaseModel):
 
 # ── Requests / Responses ──────────────────────────────────────────────────────
 
+class TelegramChatMapping(BaseModel):
+    chat_id: str
+    workflow_id: UUID
+    username: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class TelegramChatMappingCreate(BaseModel):
+    chat_id: str
+    workflow_id: UUID
+    username: Optional[str] = None
+
+
 class ExecuteRequest(BaseModel):
+    """Request payload for executing a single agent task or a workflow."""
     task: str
 
 
 class ExecuteResponse(BaseModel):
+    """Response returned after running a single agent execution."""
     agent_id: UUID
     task: str
     result: str
@@ -112,6 +138,7 @@ class ExecuteResponse(BaseModel):
 
 
 class WorkflowExecuteResponse(BaseModel):
+    """Response returned after running a multi-agent workflow execution."""
     workflow_id: UUID
     task: str
     result: str

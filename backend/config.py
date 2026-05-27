@@ -1,8 +1,10 @@
+"""Configuration settings for the application."""
 from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application configuration settings loaded from environment variables."""
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     LOG_LEVEL: str = "INFO"
@@ -18,6 +20,8 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+
+    TELEGRAM_BOT_TOKEN: str = ""
 
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/agent_db"
     REDIS_URL: str = "redis://localhost:6379"

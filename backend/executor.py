@@ -1,3 +1,5 @@
+"""LLM and LangGraph based agent execution framework."""
+
 from __future__ import annotations
 import uuid
 from typing import Any, Dict, TypedDict
@@ -22,8 +24,11 @@ COST_PER_1K: Dict[str, float] = {
 
 
 class LLMFactory:
+    """Factory class to construct and configure LangChain chat model instances."""
+
     @staticmethod
     def get_llm(model: str, provider: str):
+        """Build and return the appropriate LangChain ChatModel object based on provider."""
         if provider == "openai":
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(model=model, openai_api_key=settings.OPENAI_API_KEY)
@@ -50,6 +55,7 @@ class LLMFactory:
 # ── Tool ──────────────────────────────────────────────────────────────────────
 
 def web_search(query: str) -> str:
+    """Perform a mock web search and return a summary string of search results."""
     return (
         f"[mock search results for '{query}'] "
         "1. Example result: AI agents are autonomous software entities. "
@@ -61,6 +67,7 @@ def web_search(query: str) -> str:
 # ── LangGraph state ───────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
+    """Type definition for the state carried between LangGraph execution nodes."""
     task: str
     system_prompt: str
     result: str
@@ -69,6 +76,7 @@ class AgentState(TypedDict):
 
 
 def call_llm_node(llm, state: AgentState) -> AgentState:
+    """Graph node that invokes the LLM using system prompt and task instructions."""
     messages = [
         SystemMessage(content=state["system_prompt"]),
         HumanMessage(content=state["task"]),
@@ -87,6 +95,7 @@ def call_llm_node(llm, state: AgentState) -> AgentState:
 
 
 def tool_node(state: AgentState) -> AgentState:
+    """Graph node that runs configured tools and attaches results to the state."""
     tool_calls = state.get("tool_calls", [])
     results = []
     for call in tool_calls:
@@ -96,12 +105,14 @@ def tool_node(state: AgentState) -> AgentState:
 
 
 def should_use_tool(state: AgentState) -> str:
+    """Routing helper that determines whether to transition to the tool node or exit."""
     if state.get("tool_calls"):
         return "tool"
     return END
 
 
 def build_graph(llm):
+    """Compile and return the LangGraph execution flow diagram."""
     graph = StateGraph(AgentState)
     graph.add_node("llm", lambda s: call_llm_node(llm, s))
     graph.add_node("tool", tool_node)
@@ -114,7 +125,10 @@ def build_graph(llm):
 # ── AgentExecutor ─────────────────────────────────────────────────────────────
 
 class AgentExecutor:
+    """Executor service to retrieve agents and run tasks through a StateGraph."""
+
     def execute(self, agent_id: UUID, task: str, trace_id: str) -> Dict[str, Any]:
+        """Load the agent, construct its StateGraph, execute the task, and return results."""
         log = logger.bind(trace_id=trace_id, agent_id=str(agent_id))
         log.info("agent_execute_start", task=task)
 

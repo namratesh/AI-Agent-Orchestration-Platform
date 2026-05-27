@@ -1,3 +1,5 @@
+"""Workflow executor for processing multi-agent execution sequences."""
+
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
@@ -11,7 +13,10 @@ logger = get_logger(__name__)
 
 
 class WorkflowExecutor:
+    """Service class for orchestrating and executing multi-agent workflows."""
+
     def execute(self, workflow_id: UUID, task: str, trace_id: str) -> Dict[str, Any]:
+        """Execute all nodes in a workflow sequence starting from the initial node."""
         log = logger.bind(trace_id=trace_id, workflow_id=str(workflow_id))
         log.info("workflow_start", task=task)
 
@@ -93,6 +98,7 @@ class WorkflowExecutor:
 
 
 def _next_node(edges: list, current_node_id: str) -> Optional[str]:
+    """Find and return the target node ID connected to the current node ID."""
     for edge in edges:
         if edge["source_node_id"] == current_node_id:
             return edge["target_node_id"]
