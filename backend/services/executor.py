@@ -1,20 +1,16 @@
-"""LLM and LangGraph based agent execution framework."""
-
 from __future__ import annotations
-import uuid
 from typing import Any, Dict, TypedDict
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
-from config import settings
-from db import SessionLocal, get_agent, save_message
-from logging_config import get_logger
+from core.config import settings
+from core.logging_config import get_logger
+from db.db import SessionLocal, get_agent, save_message
 
 logger = get_logger(__name__)
 
-# Cost per 1K tokens (output) by provider/model — approximate
 COST_PER_1K: Dict[str, float] = {
     "openai": 0.03,
     "openrouter": 0.002,
@@ -24,11 +20,8 @@ COST_PER_1K: Dict[str, float] = {
 
 
 class LLMFactory:
-    """Factory class to construct and configure LangChain chat model instances."""
-
     @staticmethod
     def get_llm(model: str, provider: str):
-        """Build and return the appropriate LangChain ChatModel object based on provider."""
         if provider == "openai":
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(model=model, openai_api_key=settings.OPENAI_API_KEY)
@@ -52,10 +45,7 @@ class LLMFactory:
         raise ValueError(f"Unknown provider: {provider}")
 
 
-# ── Tool ──────────────────────────────────────────────────────────────────────
-
 def web_search(query: str) -> str:
-    """Perform a mock web search and return a summary string of search results."""
     return (
         f"[mock search results for '{query}'] "
         "1. Example result: AI agents are autonomous software entities. "
@@ -64,10 +54,7 @@ def web_search(query: str) -> str:
     )
 
 
-# ── LangGraph state ───────────────────────────────────────────────────────────
-
 class AgentState(TypedDict):
-    """Type definition for the state carried between LangGraph execution nodes."""
     task: str
     system_prompt: str
     result: str
@@ -76,7 +63,6 @@ class AgentState(TypedDict):
 
 
 def call_llm_node(llm, state: AgentState) -> AgentState:
-    """Graph node that invokes the LLM using system prompt and task instructions."""
     messages = [
         SystemMessage(content=state["system_prompt"]),
         HumanMessage(content=state["task"]),
@@ -89,30 +75,24 @@ def call_llm_node(llm, state: AgentState) -> AgentState:
         usage = response.response_metadata.get("token_usage") or {}
         tokens = usage.get("total_tokens", 0)
     if not tokens:
-        tokens = len(content.split()) * 2  # rough fallback estimate
+        tokens = len(content.split()) * 2
 
     return {**state, "result": content, "tokens_used": tokens}
 
 
 def tool_node(state: AgentState) -> AgentState:
-    """Graph node that runs configured tools and attaches results to the state."""
-    tool_calls = state.get("tool_calls", [])
     results = []
-    for call in tool_calls:
+    for call in state.get("tool_calls", []):
         if call.get("name") == "web_search":
             results.append(web_search(call.get("args", {}).get("query", "")))
     return {**state, "tool_calls": results}
 
 
 def should_use_tool(state: AgentState) -> str:
-    """Routing helper that determines whether to transition to the tool node or exit."""
-    if state.get("tool_calls"):
-        return "tool"
-    return END
+    return "tool" if state.get("tool_calls") else END
 
 
 def build_graph(llm):
-    """Compile and return the LangGraph execution flow diagram."""
     graph = StateGraph(AgentState)
     graph.add_node("llm", lambda s: call_llm_node(llm, s))
     graph.add_node("tool", tool_node)
@@ -122,13 +102,8 @@ def build_graph(llm):
     return graph.compile()
 
 
-# ── AgentExecutor ─────────────────────────────────────────────────────────────
-
 class AgentExecutor:
-    """Executor service to retrieve agents and run tasks through a StateGraph."""
-
     def execute(self, agent_id: UUID, task: str, trace_id: str) -> Dict[str, Any]:
-        """Load the agent, construct its StateGraph, execute the task, and return results."""
         log = logger.bind(trace_id=trace_id, agent_id=str(agent_id))
         log.info("agent_execute_start", task=task)
 
@@ -141,7 +116,6 @@ class AgentExecutor:
             llm = LLMFactory.get_llm(agent_row.model, agent_row.provider)
             graph = build_graph(llm)
 
-            # Check if web_search is in the agent's tools
             tool_calls = []
             if "web_search" in (agent_row.tools or []):
                 tool_calls = [{"name": "web_search", "args": {"query": task}}]
@@ -164,27 +138,13 @@ class AgentExecutor:
             tokens = final_state["tokens_used"]
             cost = round((tokens / 1000) * COST_PER_1K.get(agent_row.provider, 0.002), 8)
 
-            save_message(
-                db,
-                sender_id=agent_id,
-                content=final_state["result"],
-                message_type="agent_response",
-                tokens_used=tokens,
-                cost=cost,
-            )
+            save_message(db, sender_id=agent_id, content=final_state["result"],
+                         message_type="agent_response", tokens_used=tokens, cost=cost)
 
-            log.info(
-                "agent_execute_end",
-                tokens=tokens,
-                cost=cost,
-                result_preview=final_state["result"][:120],
-            )
+            log.info("agent_execute_end", tokens=tokens, cost=cost,
+                     result_preview=final_state["result"][:120])
 
-            return {
-                "result": final_state["result"],
-                "tokens_used": tokens,
-                "cost": cost,
-            }
+            return {"result": final_state["result"], "tokens_used": tokens, "cost": cost}
         finally:
             db.close()
 

@@ -1,18 +1,12 @@
-"""Structured logging configuration using structlog."""
-
 import logging
 import structlog
-from config import settings
+from core.config import settings
 
 
 def setup_logging() -> None:
-    """Initialize standard logging and configure structlog with JSON rendering."""
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
 
-    logging.basicConfig(
-        format="%(message)s",
-        level=log_level,
-    )
+    logging.basicConfig(format="%(message)s", level=log_level)
 
     structlog.configure(
         processors=[
@@ -31,5 +25,4 @@ def setup_logging() -> None:
 
 
 def get_logger(name: str = __name__) -> structlog.stdlib.BoundLogger:
-    """Retrieve a structured logger instance with the specified name."""
     return structlog.get_logger(name)

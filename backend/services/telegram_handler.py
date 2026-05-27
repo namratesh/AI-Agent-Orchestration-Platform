@@ -1,14 +1,12 @@
-"""Telegram bot handler — receives webhook updates and routes to WorkflowExecutor."""
-
 from __future__ import annotations
 import httpx
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from config import settings
-from db import SessionLocal, get_chat_mapping
-from logging_config import get_logger
-from workflow_executor import workflow_executor
+from core.config import settings
+from core.logging_config import get_logger
+from db.db import SessionLocal, get_chat_mapping
+from services.workflow_executor import workflow_executor
 
 logger = get_logger(__name__)
 
@@ -21,9 +19,8 @@ class TelegramBot:
 
     def send_message(self, chat_id: str | int, text: str) -> None:
         url = TELEGRAM_API.format(token=self.token, method="sendMessage")
-        payload = {"chat_id": chat_id, "text": text}
         try:
-            resp = httpx.post(url, json=payload, timeout=10)
+            resp = httpx.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
             resp.raise_for_status()
             logger.info("telegram_reply_sent", chat_id=str(chat_id), chars=len(text))
         except Exception as exc:
@@ -36,7 +33,6 @@ class TelegramBot:
 
         chat_id = str(message["chat"]["id"])
         text: Optional[str] = message.get("text", "").strip()
-
         if not text:
             return
 
@@ -50,15 +46,12 @@ class TelegramBot:
             db.close()
 
         if mapping is None:
-            self.send_message(
-                chat_id,
-                "No workflow configured for this chat. "
-                "POST /telegram/mappings with your chat_id and a workflow_id.",
-            )
+            self.send_message(chat_id,
+                              "No workflow configured for this chat. "
+                              "POST /telegram/mappings with your chat_id and a workflow_id.")
             return
 
         workflow_id: UUID = mapping.workflow_id
-
         try:
             outcome = workflow_executor.execute(workflow_id, text, trace_id)
             result_text = outcome["result"]
@@ -70,7 +63,6 @@ class TelegramBot:
 
         logger.info("workflow_executed", chat_id=chat_id,
                     workflow_id=str(workflow_id), trace_id=trace_id)
-
         self.send_message(chat_id, result_text)
 
 
