@@ -1,15 +1,19 @@
 from __future__ import annotations
-from typing import Any, Dict, TypedDict
+import time
+from typing import Any, Dict, List, Optional, TypedDict
 from uuid import UUID
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
+from opentelemetry import trace as otel_trace
 
 from core.config import settings
 from core.logging_config import get_logger
-from db.db import SessionLocal, get_agent, save_message
+from db.db import SessionLocal, get_agent, get_agent_history, save_message
+from instrumentation import record_agent_execution
 
 logger = get_logger(__name__)
+_tracer = otel_trace.get_tracer(__name__)
 
 COST_PER_1K: Dict[str, float] = {
     "openai": 0.03,
@@ -45,28 +49,69 @@ class LLMFactory:
         raise ValueError(f"Unknown provider: {provider}")
 
 
+@_tracer.start_as_current_span("tool_call")
 def web_search(query: str) -> str:
-    return (
-        f"[mock search results for '{query}'] "
-        "1. Example result: AI agents are autonomous software entities. "
-        "2. LangGraph enables stateful multi-actor applications. "
-        "3. OpenRouter provides unified LLM access."
-    )
+    span = otel_trace.get_current_span()
+    span.set_attribute("tool.name", "web_search")
+    span.set_attribute("query", query[:200])
+
+    from tavily import TavilyClient
+    api_key = settings.TAVILY_API_KEY
+    if not api_key or api_key.startswith("tvly-..."):
+        return "Web search is not configured. Set TAVILY_API_KEY in .env to enable it."
+
+    client = TavilyClient(api_key=api_key)
+    response = client.search(query, max_results=5)
+    results: List[Dict] = response.get("results", [])
+    if not results:
+        return f"No results found for: {query}"
+
+    lines = [
+        f"{i}. {r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
+        for i, r in enumerate(results, 1)
+    ]
+    return "\n".join(lines)
 
 
 class AgentState(TypedDict):
     task: str
     system_prompt: str
     result: str
-    tool_calls: list
+    search_results: Optional[str]
+    tool_names: list
     tokens_used: int
+    # Conversation history: list of {"role": "human"|"ai", "content": str}
+    history: List[Dict[str, str]]
+
+
+def tool_node(state: AgentState) -> AgentState:
+    if "web_search" not in state.get("tool_names", []):
+        return state
+    results = web_search(state["task"])
+    return {**state, "search_results": results}
 
 
 def call_llm_node(llm, state: AgentState) -> AgentState:
-    messages = [
-        SystemMessage(content=state["system_prompt"]),
-        HumanMessage(content=state["task"]),
-    ]
+    # Build message list: system + history turns + current task
+    messages = [SystemMessage(content=state["system_prompt"])]
+
+    for turn in state.get("history", []):
+        if turn["role"] == "human":
+            messages.append(HumanMessage(content=turn["content"]))
+        else:
+            messages.append(AIMessage(content=turn["content"]))
+
+    search_results = state.get("search_results")
+    if search_results:
+        user_content = (
+            f"Search results for context:\n{search_results}\n\n"
+            f"Using the above search results, answer the following:\n{state['task']}"
+        )
+    else:
+        user_content = state["task"]
+
+    messages.append(HumanMessage(content=user_content))
+
     response = llm.invoke(messages)
     content = response.content
 
@@ -80,71 +125,105 @@ def call_llm_node(llm, state: AgentState) -> AgentState:
     return {**state, "result": content, "tokens_used": tokens}
 
 
-def tool_node(state: AgentState) -> AgentState:
-    results = []
-    for call in state.get("tool_calls", []):
-        if call.get("name") == "web_search":
-            results.append(web_search(call.get("args", {}).get("query", "")))
-    return {**state, "tool_calls": results}
-
-
-def should_use_tool(state: AgentState) -> str:
-    return "tool" if state.get("tool_calls") else END
-
-
-def build_graph(llm):
+def build_graph(llm, has_web_search: bool):
     graph = StateGraph(AgentState)
     graph.add_node("llm", lambda s: call_llm_node(llm, s))
-    graph.add_node("tool", tool_node)
-    graph.set_entry_point("llm")
-    graph.add_conditional_edges("llm", should_use_tool, {"tool": "tool", END: END})
-    graph.add_edge("tool", END)
+
+    if has_web_search:
+        graph.add_node("tool", tool_node)
+        graph.set_entry_point("tool")
+        graph.add_edge("tool", "llm")
+        graph.add_edge("llm", END)
+    else:
+        graph.set_entry_point("llm")
+        graph.add_edge("llm", END)
+
     return graph.compile()
 
 
 class AgentExecutor:
+    @_tracer.start_as_current_span("agent_execute")
     def execute(self, agent_id: UUID, task: str, trace_id: str) -> Dict[str, Any]:
+        span = otel_trace.get_current_span()
+        span.set_attribute("agent_id", str(agent_id))
+        span.set_attribute("trace_id", trace_id)
+
         log = logger.bind(trace_id=trace_id, agent_id=str(agent_id))
         log.info("agent_execute_start", task=task)
 
+        t0 = time.perf_counter()
         db = SessionLocal()
         try:
             agent_row = get_agent(db, agent_id)
             if agent_row is None:
                 raise ValueError(f"Agent {agent_id} not found")
 
-            llm = LLMFactory.get_llm(agent_row.model, agent_row.provider)
-            graph = build_graph(llm)
+            span.set_attribute("provider", agent_row.provider)
+            span.set_attribute("model", agent_row.model)
 
-            tool_calls = []
-            if "web_search" in (agent_row.tools or []):
-                tool_calls = [{"name": "web_search", "args": {"query": task}}]
+            # Load last 20 messages (10 turns) so the LLM has prior context
+            history_rows = get_agent_history(db, agent_id, limit=20)
+            history = [
+                {
+                    "role": "human" if row.message_type == "user_message" else "ai",
+                    "content": row.content,
+                }
+                for row in history_rows
+            ]
+            log.info("agent_memory_loaded", turns=len(history))
+
+            # Persist the user's task before execution so it's part of future history
+            save_message(db, receiver_id=agent_id, content=task,
+                         message_type="user_message")
+
+            has_web_search = "web_search" in (agent_row.tools or [])
+            llm = LLMFactory.get_llm(agent_row.model, agent_row.provider)
+            graph = build_graph(llm, has_web_search)
+
+            if has_web_search:
                 log.info("tool_call", tool="web_search", query=task)
 
             initial_state: AgentState = {
                 "task": task,
                 "system_prompt": agent_row.system_prompt,
                 "result": "",
-                "tool_calls": tool_calls,
+                "search_results": None,
+                "tool_names": agent_row.tools or [],
                 "tokens_used": 0,
+                "history": history,
             }
 
             final_state = graph.invoke(initial_state)
 
-            if tool_calls:
+            if has_web_search:
                 log.info("tool_result", tool="web_search",
-                         result=final_state.get("tool_calls", []))
+                         result=(final_state.get("search_results") or "")[:200])
 
             tokens = final_state["tokens_used"]
             cost = round((tokens / 1000) * COST_PER_1K.get(agent_row.provider, 0.002), 8)
+            duration = time.perf_counter() - t0
 
+            span.set_attribute("tokens_used", tokens)
+            span.set_attribute("cost_usd", cost)
+
+            # Persist the agent's response for future history recall
             save_message(db, sender_id=agent_id, content=final_state["result"],
                          message_type="agent_response", tokens_used=tokens, cost=cost)
 
             log.info("agent_execute_end", tokens=tokens, cost=cost,
                      result_preview=final_state["result"][:120])
 
+            record_agent_execution(provider=agent_row.provider, tokens=tokens,
+                                   cost=cost, duration=duration, status="success")
+
             return {"result": final_state["result"], "tokens_used": tokens, "cost": cost}
+
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(otel_trace.StatusCode.ERROR, str(exc))
+            record_agent_execution(provider="unknown", tokens=0, cost=0.0,
+                                   duration=time.perf_counter() - t0, status="error")
+            raise
         finally:
             db.close()
 

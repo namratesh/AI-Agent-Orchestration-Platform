@@ -131,4 +131,32 @@ class WorkflowExecuteResponse(BaseModel):
     workflow_id: UUID
     task: str
     result: str
+    tokens_used: int = 0
+    cost: float = 0.0
     trace_id: str
+    execution_id: Optional[UUID] = None
+    execution_time_seconds: float = 0.0
+
+
+class ExecutionRecord(BaseModel):
+    id: UUID
+    workflow_id: Optional[UUID] = None
+    workflow_name: Optional[str] = None
+    task: str
+    result: str
+    status: str
+    tokens_used: int
+    cost: float
+    execution_time_seconds: float
+    source: str = "ui"
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class StatsResponse(BaseModel):
+    total_agents: int
+    total_workflows: int
+    executions_today: int
+    cost_this_month: float
+    recent_executions: List[ExecutionRecord]

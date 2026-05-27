@@ -3,6 +3,12 @@ import structlog
 from core.config import settings
 
 
+def _ws_broadcast(logger, method, event_dict):
+    from services.log_broadcaster import log_broadcaster
+    log_broadcaster.broadcast(dict(event_dict))
+    return event_dict
+
+
 def setup_logging() -> None:
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
 
@@ -15,6 +21,7 @@ def setup_logging() -> None:
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            _ws_broadcast,
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,

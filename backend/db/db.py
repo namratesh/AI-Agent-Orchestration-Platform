@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, create_engine
+from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, create_engine, func, or_, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -79,6 +79,21 @@ class TelegramChatMappingORM(Base):
     created_at  = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
+class WorkflowExecutionORM(Base):
+    __tablename__ = "workflow_executions"
+
+    id                    = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id           = Column(PG_UUID(as_uuid=True), nullable=True)
+    task                  = Column(Text, nullable=False)
+    result                = Column(Text, nullable=False, default="")
+    status                = Column(String(32), nullable=False, default="success")
+    tokens_used           = Column(Integer, nullable=False, default=0)
+    cost                  = Column(Numeric(12, 8), nullable=False, default=0)
+    execution_time_seconds = Column(Numeric(10, 3), nullable=False, default=0)
+    source                = Column(String(32), nullable=False, default="ui")
+    created_at            = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
 # ── Session dependency ────────────────────────────────────────────────────────
 
 def get_db():
@@ -105,6 +120,14 @@ def get_agent(db: Session, agent_id: UUID) -> Optional[AgentORM]:
 
 def list_agents(db: Session) -> List[AgentORM]:
     return db.query(AgentORM).order_by(AgentORM.created_at.desc()).all()
+
+
+def delete_agent(db: Session, agent_id: UUID) -> bool:
+    row = db.query(AgentORM).filter(AgentORM.id == agent_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
 
 
 # ── Workflow ──────────────────────────────────────────────────────────────────
@@ -142,6 +165,20 @@ def get_messages(db: Session, workflow_id: Optional[UUID] = None,
     if workflow_id:
         q = q.filter(MessageORM.workflow_id == workflow_id)
     return q.order_by(MessageORM.timestamp.desc()).limit(limit).all()
+
+
+def get_agent_history(db: Session, agent_id: UUID, limit: int = 20) -> List[MessageORM]:
+    """Return the last `limit` human+AI messages for an agent, oldest first."""
+    return (
+        db.query(MessageORM)
+        .filter(
+            or_(MessageORM.sender_id == agent_id, MessageORM.receiver_id == agent_id),
+            MessageORM.message_type.in_(["user_message", "agent_response"]),
+        )
+        .order_by(MessageORM.timestamp.asc())
+        .limit(limit)
+        .all()
+    )
 
 
 # ── Checkpoint ────────────────────────────────────────────────────────────────
@@ -198,3 +235,47 @@ def delete_chat_mapping(db: Session, chat_id: str) -> bool:
         return False
     db.delete(row); db.commit()
     return True
+
+
+# ── Workflow execution history ────────────────────────────────────────────────
+
+def save_execution(db: Session, *, workflow_id: Optional[UUID], task: str, result: str,
+                   status: str = "success", tokens_used: int = 0, cost: float = 0.0,
+                   execution_time_seconds: float = 0.0,
+                   source: str = "ui") -> WorkflowExecutionORM:
+    row = WorkflowExecutionORM(workflow_id=workflow_id, task=task, result=result,
+                               status=status, tokens_used=tokens_used, cost=cost,
+                               execution_time_seconds=execution_time_seconds, source=source)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def list_executions(db: Session, limit: int = 50, offset: int = 0) -> List[WorkflowExecutionORM]:
+    return (db.query(WorkflowExecutionORM)
+            .order_by(WorkflowExecutionORM.created_at.desc())
+            .offset(offset).limit(limit).all())
+
+
+def get_execution(db: Session, execution_id: UUID) -> Optional[WorkflowExecutionORM]:
+    return db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.id == execution_id).first()
+
+
+def delete_execution(db: Session, execution_id: UUID) -> bool:
+    row = db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.id == execution_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+def count_executions_today(db: Session) -> int:
+    return db.query(WorkflowExecutionORM).filter(
+        WorkflowExecutionORM.created_at >= func.now() - text("INTERVAL '1 day'")
+    ).count()
+
+
+def sum_cost_this_month(db: Session) -> float:
+    result = db.query(func.sum(WorkflowExecutionORM.cost)).filter(
+        WorkflowExecutionORM.created_at >= func.now() - text("INTERVAL '30 days'")
+    ).scalar()
+    return float(result or 0.0)
