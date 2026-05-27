@@ -1,11 +1,13 @@
 import axios from 'axios'
 import type {
   Agent, AgentCreate, ExecutionRecord, StatsResponse,
-  TelegramMapping, Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse,
+  TelegramMapping, Tool, ToolCreate, ToolTestRequest, ToolTestResponse, ToolUpdate,
+  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse,
 } from './types'
 
 export type { Agent, AgentCreate, ExecutionRecord, StatsResponse,
-  TelegramMapping, Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse }
+  TelegramMapping, Tool, ToolCreate, ToolTestRequest, ToolTestResponse, ToolUpdate,
+  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse }
 
 export const api = axios.create({ baseURL: '' })
 
@@ -24,6 +26,7 @@ export const createWorkflow   = (data: WorkflowCreate) =>
   api.post<Workflow>('/workflows', data).then(r => r.data)
 export const executeWorkflow  = (id: string, task: string) =>
   api.post<WorkflowExecuteResponse>(`/workflows/${id}/execute`, { task }).then(r => r.data)
+export const deleteWorkflow   = (id: string) => api.delete(`/workflows/${id}`)
 export const listCheckpoints  = (id: string) =>
   api.get(`/workflows/${id}/checkpoints`).then(r => r.data)
 
@@ -42,3 +45,13 @@ export const listMappings   = () => api.get<TelegramMapping[]>('/telegram/mappin
 export const createMapping  = (data: TelegramMapping) =>
   api.post<TelegramMapping>('/telegram/mappings', data).then(r => r.data)
 export const deleteMapping  = (chatId: string) => api.delete(`/telegram/mappings/${chatId}`)
+
+// ── Tools ─────────────────────────────────────────────────────────────────────
+export const listTools    = () => api.get<Tool[]>('/tools').then(r => r.data)
+export const getTool      = (id: string) => api.get<Tool>(`/tools/${id}`).then(r => r.data)
+export const createTool   = (data: ToolCreate) => api.post<Tool>('/tools', data).then(r => r.data)
+export const updateTool   = (id: string, data: ToolUpdate) =>
+  api.put<Tool>(`/tools/${id}`, data).then(r => r.data)
+export const deleteTool   = (id: string) => api.delete(`/tools/${id}`)
+export const testTool     = (id: string, data: ToolTestRequest) =>
+  api.post<ToolTestResponse>(`/tools/${id}/test`, data).then(r => r.data)

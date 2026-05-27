@@ -1,18 +1,20 @@
 import { NavLink } from 'react-router-dom'
 import {
-  LayoutDashboard, Bot, GitBranch, Play, FileText, History, Settings, Zap,
+  LayoutDashboard, Bot, GitBranch, Play, FileText, History, Settings, Wrench, Zap, Network,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useAppStore } from '../store'
 
 const NAV = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard'  },
-  { to: '/agents',    icon: Bot,             label: 'Agents'      },
-  { to: '/workflows', icon: GitBranch,       label: 'Workflows'   },
-  { to: '/executor',  icon: Play,            label: 'Executor'    },
-  { to: '/history',   icon: History,         label: 'History'     },
-  { to: '/logs',      icon: FileText,        label: 'Live Logs'   },
-  { to: '/settings',  icon: Settings,        label: 'Settings'    },
+  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/agents',    icon: Bot,             label: 'Agents'    },
+  { to: '/tools',     icon: Wrench,          label: 'Tools'     },
+  { to: '/workspace', icon: Network,         label: 'Workspace' },
+  { to: '/workflows', icon: GitBranch,       label: 'Workflows' },
+  { to: '/executor',  icon: Play,            label: 'Executor'  },
+  { to: '/history',   icon: History,         label: 'History'   },
+  { to: '/logs',      icon: FileText,        label: 'Live Logs' },
+  { to: '/settings',  icon: Settings,        label: 'Settings'  },
 ]
 
 export default function Sidebar() {

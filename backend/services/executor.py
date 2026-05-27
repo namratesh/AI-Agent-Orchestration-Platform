@@ -25,10 +25,15 @@ COST_PER_1K: Dict[str, float] = {
 
 class LLMFactory:
     @staticmethod
-    def get_llm(model: str, provider: str):
+    def get_llm(model: str, provider: str, temperature: float = 0.7, max_tokens: int = 2048):
         if provider == "openai":
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(model=model, openai_api_key=settings.OPENAI_API_KEY)
+            return ChatOpenAI(
+                model=model,
+                openai_api_key=settings.OPENAI_API_KEY,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
         if provider == "openrouter":
             from langchain_openai import ChatOpenAI
@@ -36,15 +41,27 @@ class LLMFactory:
                 model=model or settings.OPENROUTER_MODEL,
                 openai_api_key=settings.OPENROUTER_API_KEY,
                 openai_api_base="https://openrouter.ai/api/v1",
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
 
         if provider == "groq":
             from langchain_groq import ChatGroq
-            return ChatGroq(model=model, groq_api_key=settings.GROQ_API_KEY)
+            return ChatGroq(
+                model=model,
+                groq_api_key=settings.GROQ_API_KEY,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
         if provider == "ollama":
             from langchain_community.chat_models import ChatOllama
-            return ChatOllama(model=model, base_url=settings.OLLAMA_BASE_URL)
+            return ChatOllama(
+                model=model,
+                base_url=settings.OLLAMA_BASE_URL,
+                temperature=temperature,
+                num_predict=max_tokens,
+            )
 
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -161,23 +178,46 @@ class AgentExecutor:
             span.set_attribute("provider", agent_row.provider)
             span.set_attribute("model", agent_row.model)
 
-            # Load last 20 messages (10 turns) so the LLM has prior context
-            history_rows = get_agent_history(db, agent_id, limit=20)
-            history = [
-                {
-                    "role": "human" if row.message_type == "user_message" else "ai",
-                    "content": row.content,
-                }
-                for row in history_rows
-            ]
-            log.info("agent_memory_loaded", turns=len(history))
+            # Extract config values — fall back to sensible defaults
+            cfg             = agent_row.config or {}
+            temperature     = float(cfg.get("temperature", 0.7))
+            max_tokens      = int(cfg.get("max_tokens", 2048))
+            max_iterations  = int(cfg.get("max_iterations", 10))
+            memory_type     = str(cfg.get("memory_type", "buffer"))
+            memory_window   = int(cfg.get("memory_window", 10))
+
+            log.info("agent_config_applied",
+                     temperature=temperature, max_tokens=max_tokens,
+                     max_iterations=max_iterations,
+                     memory_type=memory_type, memory_window=memory_window)
+
+            # Load conversation history according to memory settings
+            if memory_type == "none":
+                history = []
+                log.info("agent_memory_disabled")
+            else:
+                # memory_window = number of turns; each turn = 2 messages (human + ai)
+                limit = memory_window * 2
+                history_rows = get_agent_history(db, agent_id, limit=limit)
+                history = [
+                    {
+                        "role": "human" if row.message_type == "user_message" else "ai",
+                        "content": row.content,
+                    }
+                    for row in history_rows
+                ]
+                log.info("agent_memory_loaded",
+                         memory_type=memory_type, window=memory_window, turns=len(history))
 
             # Persist the user's task before execution so it's part of future history
             save_message(db, receiver_id=agent_id, content=task,
                          message_type="user_message")
 
             has_web_search = "web_search" in (agent_row.tools or [])
-            llm = LLMFactory.get_llm(agent_row.model, agent_row.provider)
+            llm = LLMFactory.get_llm(
+                agent_row.model, agent_row.provider,
+                temperature=temperature, max_tokens=max_tokens,
+            )
             graph = build_graph(llm, has_web_search)
 
             if has_web_search:
@@ -193,7 +233,10 @@ class AgentExecutor:
                 "history": history,
             }
 
-            final_state = graph.invoke(initial_state)
+            final_state = graph.invoke(
+                initial_state,
+                config={"recursion_limit": max_iterations},
+            )
 
             if has_web_search:
                 log.info("tool_result", tool="web_search",
