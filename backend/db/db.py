@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, create_engine, func, text
+from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, create_engine, func, or_, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -165,6 +165,20 @@ def get_messages(db: Session, workflow_id: Optional[UUID] = None,
     if workflow_id:
         q = q.filter(MessageORM.workflow_id == workflow_id)
     return q.order_by(MessageORM.timestamp.desc()).limit(limit).all()
+
+
+def get_agent_history(db: Session, agent_id: UUID, limit: int = 20) -> List[MessageORM]:
+    """Return the last `limit` human+AI messages for an agent, oldest first."""
+    return (
+        db.query(MessageORM)
+        .filter(
+            or_(MessageORM.sender_id == agent_id, MessageORM.receiver_id == agent_id),
+            MessageORM.message_type.in_(["user_message", "agent_response"]),
+        )
+        .order_by(MessageORM.timestamp.asc())
+        .limit(limit)
+        .all()
+    )
 
 
 # ── Checkpoint ────────────────────────────────────────────────────────────────
