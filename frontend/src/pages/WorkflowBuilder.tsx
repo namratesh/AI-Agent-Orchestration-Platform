@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   GitBranch, Plus, Play, Bot, Wrench, Clock, Network,
-  RefreshCw, ChevronRight, Layers, Trash2,
+  RefreshCw, ChevronRight, Layers, Trash2, LayoutTemplate, X,
+  ArrowRight,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -13,6 +14,85 @@ import { PageSpinner } from '../components/LoadingSpinner'
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// ─── Hardcoded workflow templates ────────────────────────────────────────────
+const WORKFLOW_TEMPLATES = [
+  {
+    id: 'research-summarize',
+    name: 'Research & Summarize',
+    description: 'Two-agent pipeline: a researcher gathers information, then a writer produces a clean summary report.',
+    agentCount: 2,
+    toolCount: 0,
+    steps: ['Research Agent', 'Summarizer Agent'],
+  },
+  {
+    id: 'content-pipeline',
+    name: 'Content Pipeline',
+    description: 'Three-stage pipeline: collect data, analyze it, then produce a polished report — ideal for automated content generation.',
+    agentCount: 3,
+    toolCount: 0,
+    steps: ['Data Collector', 'Analyzer Agent', 'Report Writer'],
+  },
+]
+
+function TemplateModal({ onClose, onSelect }: { onClose: () => void; onSelect: (id: string) => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex items-center gap-2">
+            <LayoutTemplate size={18} className="text-indigo-500" />
+            <h2 className="font-bold text-gray-900 dark:text-gray-100">Workflow Templates</h2>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {WORKFLOW_TEMPLATES.map(tpl => (
+            <div
+              key={tpl.id}
+              className="border border-gray-200 dark:border-gray-700 rounded-xl p-4 hover:border-indigo-400 dark:hover:border-indigo-500 hover:shadow-md transition-all cursor-pointer group"
+              onClick={() => onSelect(tpl.id)}
+            >
+              <div className="flex items-start justify-between mb-2">
+                <h3 className="font-bold text-gray-900 dark:text-gray-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                  {tpl.name}
+                </h3>
+                <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-2 py-0.5 rounded-full font-semibold">
+                  {tpl.agentCount} agents
+                </span>
+              </div>
+
+              <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed mb-3">{tpl.description}</p>
+
+              {/* Step flow visualization */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {tpl.steps.map((step, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <span className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 text-[10px] font-medium px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800">
+                      <Bot size={9} /> {step}
+                    </span>
+                    {i < tpl.steps.length - 1 && <ArrowRight size={10} className="text-gray-400 shrink-0" />}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={e => { e.stopPropagation(); onSelect(tpl.id) }}
+                className="mt-4 w-full flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2 rounded-lg transition-colors"
+              >
+                Use Template <ChevronRight size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun: (id: string) => void; onDelete: (id: string) => void }) {
@@ -30,7 +110,7 @@ function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun
     try {
       await onRun(workflow.id)
       await executeWorkflow(workflow.id, task)
-      toast.success('Workflow started!')
+      toast.success('Workflow queued!')
       setShowRun(false)
       setTask('')
     } catch {
@@ -104,7 +184,7 @@ function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun
             className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors shrink-0"
           >
             {running ? <RefreshCw size={13} className="animate-spin" /> : <Play size={13} />}
-            {running ? 'Running…' : 'Execute'}
+            {running ? 'Queuing…' : 'Execute'}
           </button>
         </div>
       )}
@@ -129,6 +209,7 @@ export default function WorkflowBuilder() {
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState('')
+  const [showTemplates, setShowTemplates] = useState(false)
   const navigate = useNavigate()
 
   const load = useCallback(() => {
@@ -153,12 +234,21 @@ export default function WorkflowBuilder() {
     }
   }
 
+  const handleSelectTemplate = (templateId: string) => {
+    setShowTemplates(false)
+    navigate(`/workspace?template=${templateId}`)
+  }
+
   const filtered = workflows.filter(w =>
     !search || w.name.toLowerCase().includes(search.toLowerCase())
   )
 
   return (
     <div className="space-y-6">
+      {showTemplates && (
+        <TemplateModal onClose={() => setShowTemplates(false)} onSelect={handleSelectTemplate} />
+      )}
+
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
@@ -187,6 +277,12 @@ export default function WorkflowBuilder() {
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
           </button>
           <button
+            onClick={() => setShowTemplates(true)}
+            className="flex items-center gap-2 border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
+          >
+            <LayoutTemplate size={16} /> Templates
+          </button>
+          <button
             onClick={() => navigate('/workspace')}
             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
           >
@@ -207,15 +303,23 @@ export default function WorkflowBuilder() {
             {search ? 'No workflows match your search' : 'No workflows yet'}
           </h3>
           <p className="text-sm text-gray-400 max-w-xs mb-6">
-            {search ? 'Try a different name.' : 'Build your first workflow by dragging agents and tools onto the canvas in the Workspace.'}
+            {search ? 'Try a different name.' : 'Start from a template or build your own in the Workspace.'}
           </p>
           {!search && (
-            <Link
-              to="/workspace"
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors"
-            >
-              <Plus size={15} /> Open Workspace
-            </Link>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowTemplates(true)}
+                className="flex items-center gap-2 border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors hover:bg-indigo-100"
+              >
+                <LayoutTemplate size={15} /> Use Template
+              </button>
+              <Link
+                to="/workspace"
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors"
+              >
+                <Plus size={15} /> Open Workspace
+              </Link>
+            </div>
           )}
         </div>
       ) : (

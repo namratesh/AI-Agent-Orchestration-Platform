@@ -67,6 +67,16 @@ export interface WorkflowExecuteResponse {
   trace_id: string
   execution_id?: string
   execution_time_seconds: number
+  status: string
+}
+
+export interface AgentConfig {
+  temperature?: number
+  max_tokens?: number
+  max_iterations?: number
+  memory_type?: 'none' | 'buffer'
+  memory_window?: number
+  max_output_words?: number
 }
 
 export interface ExecutionRecord {
@@ -75,12 +85,13 @@ export interface ExecutionRecord {
   workflow_name?: string
   task: string
   result: string
-  status: 'success' | 'error'
+  status: 'success' | 'error' | 'queued' | 'running'
   tokens_used: number
   cost: number
   execution_time_seconds: number
   source: string
   created_at: string
+  node_outputs?: Record<string, string>
 }
 
 export interface StatsResponse {

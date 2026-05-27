@@ -108,6 +108,7 @@ class WorkflowExecutionORM(Base):
     cost                  = Column(Numeric(12, 8), nullable=False, default=0)
     execution_time_seconds = Column(Numeric(10, 3), nullable=False, default=0)
     source                = Column(String(32), nullable=False, default="ui")
+    node_outputs          = Column(JSONB, nullable=False, default=dict)
     created_at            = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
@@ -259,11 +260,40 @@ def delete_chat_mapping(db: Session, chat_id: str) -> bool:
 def save_execution(db: Session, *, workflow_id: Optional[UUID], task: str, result: str,
                    status: str = "success", tokens_used: int = 0, cost: float = 0.0,
                    execution_time_seconds: float = 0.0,
-                   source: str = "ui") -> WorkflowExecutionORM:
+                   source: str = "ui",
+                   node_outputs: Optional[Dict[str, Any]] = None) -> WorkflowExecutionORM:
     row = WorkflowExecutionORM(workflow_id=workflow_id, task=task, result=result,
                                status=status, tokens_used=tokens_used, cost=cost,
-                               execution_time_seconds=execution_time_seconds, source=source)
+                               execution_time_seconds=execution_time_seconds, source=source,
+                               node_outputs=node_outputs or {})
     db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def create_execution_queued(db: Session, *, workflow_id: Optional[UUID], task: str,
+                             source: str = "ui") -> WorkflowExecutionORM:
+    row = WorkflowExecutionORM(workflow_id=workflow_id, task=task, result="",
+                               status="queued", source=source, node_outputs={})
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def update_execution(db: Session, execution_id: UUID, *, status: str, result: str = "",
+                     tokens_used: int = 0, cost: float = 0.0,
+                     execution_time_seconds: float = 0.0,
+                     node_outputs: Optional[Dict[str, Any]] = None) -> Optional[WorkflowExecutionORM]:
+    row = db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.id == execution_id).first()
+    if row is None:
+        return None
+    row.status = status
+    row.result = result
+    row.tokens_used = tokens_used
+    row.cost = cost
+    row.execution_time_seconds = execution_time_seconds
+    if node_outputs is not None:
+        row.node_outputs = node_outputs
+    db.commit()
+    db.refresh(row)
     return row
 
 

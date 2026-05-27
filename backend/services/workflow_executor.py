@@ -17,7 +17,8 @@ from langgraph.graph import END, StateGraph
 from opentelemetry import trace as otel_trace
 
 from core.logging_config import get_logger
-from db.db import SessionLocal, get_tool, get_workflow, save_checkpoint, save_execution
+from db.db import (SessionLocal, get_tool, get_workflow, save_checkpoint,
+                   save_execution, update_execution)
 from instrumentation import record_workflow_execution
 from services.executor import agent_executor
 
@@ -217,7 +218,8 @@ def _build_langgraph(definition: dict, trace_id: str,
 class WorkflowExecutor:
     @_tracer.start_as_current_span("workflow_execute")
     def execute(self, workflow_id: UUID, task: str, trace_id: str,
-                source: str = "ui") -> Dict[str, Any]:
+                source: str = "ui",
+                existing_execution_id: Optional[UUID] = None) -> Dict[str, Any]:
         span = otel_trace.get_current_span()
         span.set_attribute("workflow_id", str(workflow_id))
         span.set_attribute("trace_id", trace_id)
@@ -258,25 +260,36 @@ class WorkflowExecutor:
                 config={"recursion_limit": 50},
             )
 
-            result   = final_state["current_output"]
-            tokens   = final_state["tokens_used"]
-            cost     = final_state["cost"]
-            elapsed  = time.perf_counter() - t0
+            result       = final_state["current_output"]
+            tokens       = final_state["tokens_used"]
+            cost         = final_state["cost"]
+            node_outputs = final_state["node_outputs"]
+            elapsed      = time.perf_counter() - t0
 
             span.set_attribute("total_tokens", tokens)
             span.set_attribute("total_cost_usd", cost)
             span.set_attribute("execution_time_s", elapsed)
 
-            exec_row = save_execution(
-                db, workflow_id=workflow_id, task=task, result=result,
-                status="success", tokens_used=tokens, cost=cost,
-                execution_time_seconds=elapsed, source=source,
-            )
+            if existing_execution_id:
+                row = update_execution(
+                    db, existing_execution_id, status="success", result=result,
+                    tokens_used=tokens, cost=cost,
+                    execution_time_seconds=elapsed, node_outputs=node_outputs,
+                )
+                exec_id = existing_execution_id
+            else:
+                row = save_execution(
+                    db, workflow_id=workflow_id, task=task, result=result,
+                    status="success", tokens_used=tokens, cost=cost,
+                    execution_time_seconds=elapsed, source=source,
+                    node_outputs=node_outputs,
+                )
+                exec_id = row.id
 
             log.info("workflow_complete",
                      tokens=tokens, cost=cost, elapsed=round(elapsed, 3),
                      result_preview=result[:120],
-                     node_outputs_count=len(final_state["node_outputs"]))
+                     node_outputs_count=len(node_outputs))
 
             record_workflow_execution(status="success")
 
@@ -285,20 +298,26 @@ class WorkflowExecutor:
                 "workflow_id":            str(workflow_id),
                 "tokens_used":            tokens,
                 "cost":                   cost,
-                "execution_id":           exec_row.id,
+                "execution_id":           exec_id,
                 "execution_time_seconds": elapsed,
-                "node_outputs":           final_state["node_outputs"],
+                "node_outputs":           node_outputs,
             }
 
         except Exception as exc:
             elapsed = time.perf_counter() - t0
             span.record_exception(exc)
             span.set_status(otel_trace.StatusCode.ERROR, str(exc))
-            save_execution(
-                db, workflow_id=workflow_id, task=task, result=str(exc),
-                status="error", tokens_used=0, cost=0.0,
-                execution_time_seconds=elapsed, source=source,
-            )
+            if existing_execution_id:
+                update_execution(
+                    db, existing_execution_id, status="error", result=str(exc),
+                    execution_time_seconds=elapsed,
+                )
+            else:
+                save_execution(
+                    db, workflow_id=workflow_id, task=task, result=str(exc),
+                    status="error", tokens_used=0, cost=0.0,
+                    execution_time_seconds=elapsed, source=source,
+                )
             record_workflow_execution(status="error")
             log.error("workflow_failed", error=str(exc))
             raise

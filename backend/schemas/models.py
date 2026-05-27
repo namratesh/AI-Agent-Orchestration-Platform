@@ -137,12 +137,13 @@ class ExecuteResponse(BaseModel):
 class WorkflowExecuteResponse(BaseModel):
     workflow_id: UUID
     task: str
-    result: str
+    result: str = ""
     tokens_used: int = 0
     cost: float = 0.0
     trace_id: str
     execution_id: Optional[UUID] = None
     execution_time_seconds: float = 0.0
+    status: str = "queued"
 
 
 class ExecutionRecord(BaseModel):
@@ -157,6 +158,7 @@ class ExecutionRecord(BaseModel):
     execution_time_seconds: float
     source: str = "ui"
     created_at: datetime
+    node_outputs: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"from_attributes": True}
 
