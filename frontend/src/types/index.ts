@@ -26,10 +26,17 @@ export interface WorkflowNode {
   config: Record<string, unknown>
 }
 
+export type ConditionType = 'always' | 'contains' | 'not_contains' | 'equals' | 'not_equals'
+
+export interface EdgeCondition {
+  type: ConditionType
+  value: string
+}
+
 export interface WorkflowEdge {
   source_node_id: string
   target_node_id: string
-  condition?: string
+  condition?: EdgeCondition
 }
 
 export interface WorkflowDefinition {

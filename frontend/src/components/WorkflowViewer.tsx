@@ -41,7 +41,9 @@ export default function WorkflowViewer({ definition, agents }: Props) {
     target: e.target_node_id,
     animated: true,
     style: { stroke: '#6366f1' },
-    label: e.condition,
+    label: e.condition && e.condition.type !== 'always'
+      ? `if ${e.condition.type} "${e.condition.value}"`
+      : undefined,
   }))
 
   return (

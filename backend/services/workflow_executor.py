@@ -1,6 +1,7 @@
 from __future__ import annotations
 import time
-from typing import Any, Dict, Optional
+from collections import deque
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from opentelemetry import trace as otel_trace
@@ -38,13 +39,31 @@ class WorkflowExecutor:
             definition: dict = workflow_row.definition
             nodes: Dict[str, dict] = {n["id"]: n for n in definition["nodes"]}
             edges: list = definition["edges"]
-            current_node_id: Optional[str] = definition["start_node_id"]
-            current_input: str = task
-            final_result: str = task
+
+            # Build outgoing adjacency list with optional conditions
+            # Each entry: { "target": node_id, "condition": {type, value} | None }
+            outgoing: Dict[str, List[dict]] = {}
+            for edge in edges:
+                outgoing.setdefault(edge["source_node_id"], []).append({
+                    "target": edge["target_node_id"],
+                    "condition": edge.get("condition"),
+                })
+
             total_tokens: int = 0
             total_cost: float = 0.0
+            final_result: str = task
 
-            while current_node_id:
+            # BFS: each entry is (node_id, input_text)
+            # A node that connects to N targets queues all N with the same output
+            queue: deque = deque([(definition["start_node_id"], task)])
+            visited: set = set()
+
+            while queue:
+                current_node_id, current_input = queue.popleft()
+                if current_node_id in visited:
+                    continue
+                visited.add(current_node_id)
+
                 node = nodes[current_node_id]
                 node_type = node.get("type", "AGENT")
                 log.info("node_executing", node_id=current_node_id, node_type=node_type)
@@ -53,7 +72,8 @@ class WorkflowExecutor:
                     log.info("node_skipped", node_id=current_node_id,
                              reason="non_agent_or_no_agent_id")
                     final_result = current_input
-                    current_node_id = _next_node(edges, current_node_id)
+                    for nxt in outgoing.get(current_node_id, []):
+                        queue.append((nxt, current_input))
                     continue
 
                 node_agent_id = UUID(str(node["agent_id"]))
@@ -75,20 +95,25 @@ class WorkflowExecutor:
                          agent_id=str(node_agent_id),
                          tokens=outcome["tokens_used"], cost=outcome["cost"])
 
-                next_node_id = _next_node(edges, current_node_id)
-
-                if next_node_id:
+                edge_infos = outgoing.get(current_node_id, [])
+                # Filter edges whose condition matches the node's output
+                matched = [
+                    ei for ei in edge_infos
+                    if _evaluate_condition(ei.get("condition"), outcome["result"])
+                ]
+                if matched:
                     publish_result(f"workflow:{workflow_id}",
                                    {"node_id": current_node_id,
-                                    "next_node_id": next_node_id,
+                                    "next_node_ids": [ei["target"] for ei in matched],
                                     "result": outcome["result"]})
                     consumed = consume_task(f"workflow:{workflow_id}", timeout=30)
-                    current_input = consumed["result"] if consumed else outcome["result"]
-                    log.info("node_result", node_id=current_node_id, next_node=next_node_id)
+                    propagated = consumed["result"] if consumed else outcome["result"]
+                    for ei in matched:
+                        queue.append((ei["target"], propagated))
+                    log.info("node_result", node_id=current_node_id,
+                             next_nodes=[ei["target"] for ei in matched])
                 else:
                     final_result = outcome["result"]
-
-                current_node_id = next_node_id
 
             elapsed = time.perf_counter() - start_time
             span.set_attribute("total_tokens", total_tokens)
@@ -127,11 +152,22 @@ class WorkflowExecutor:
             db.close()
 
 
-def _next_node(edges: list, current_node_id: str) -> Optional[str]:
-    for edge in edges:
-        if edge["source_node_id"] == current_node_id:
-            return edge["target_node_id"]
-    return None
+def _evaluate_condition(condition: Optional[dict], node_output: str) -> bool:
+    """Return True if the edge condition passes for the given node output."""
+    if not condition or condition.get("type") == "always":
+        return True
+    cond_type = condition.get("type", "always")
+    value = (condition.get("value") or "").lower().strip()
+    output = node_output.lower().strip()
+    if cond_type == "contains":
+        return value in output
+    if cond_type == "not_contains":
+        return value not in output
+    if cond_type == "equals":
+        return output == value
+    if cond_type == "not_equals":
+        return output != value
+    return True
 
 
 workflow_executor = WorkflowExecutor()
