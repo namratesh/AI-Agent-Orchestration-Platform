@@ -228,3 +228,36 @@ class ToolTestResponse(BaseModel):
     response_headers: Dict[str, str]
     duration_ms: float
     error: Optional[str] = None
+
+
+# ── Workflow schedules ────────────────────────────────────────────────────────
+
+class WorkflowSchedule(BaseModel):
+    id: UUID
+    workflow_id: UUID
+    task: str
+    cron_expression: Optional[str] = None
+    interval_minutes: Optional[int] = None
+    enabled: bool
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ScheduleCreate(BaseModel):
+    task: str = ""
+    cron_expression: Optional[str] = None
+    interval_minutes: Optional[int] = None
+
+    def validate_trigger(self) -> None:
+        if not self.cron_expression and not self.interval_minutes:
+            raise ValueError("Provide either cron_expression or interval_minutes")
+
+
+class ScheduleUpdate(BaseModel):
+    task: Optional[str] = None
+    cron_expression: Optional[str] = None
+    interval_minutes: Optional[int] = None
+    enabled: Optional[bool] = None

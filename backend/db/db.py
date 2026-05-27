@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, create_engine, func, or_, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -110,6 +110,20 @@ class WorkflowExecutionORM(Base):
     source                = Column(String(32), nullable=False, default="ui")
     node_outputs          = Column(JSONB, nullable=False, default=dict)
     created_at            = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class WorkflowScheduleORM(Base):
+    __tablename__ = "workflow_schedules"
+
+    id               = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id      = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    task             = Column(Text, nullable=False, default="")
+    cron_expression  = Column(Text, nullable=True)
+    interval_minutes = Column(Integer, nullable=True)
+    enabled          = Column(Boolean, nullable=False, default=True)
+    last_run_at      = Column(DateTime(timezone=True), nullable=True)
+    next_run_at      = Column(DateTime(timezone=True), nullable=True)
+    created_at       = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
 # ── Session dependency ────────────────────────────────────────────────────────
@@ -370,6 +384,51 @@ def delete_tool(db: Session, tool_id: UUID) -> bool:
 
 def delete_workflow(db: Session, workflow_id: UUID) -> bool:
     row = db.query(WorkflowORM).filter(WorkflowORM.id == workflow_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Workflow schedules ────────────────────────────────────────────────────────
+
+def create_schedule(db: Session, *, workflow_id: UUID, task: str,
+                    cron_expression: Optional[str] = None,
+                    interval_minutes: Optional[int] = None) -> WorkflowScheduleORM:
+    row = WorkflowScheduleORM(workflow_id=workflow_id, task=task,
+                               cron_expression=cron_expression,
+                               interval_minutes=interval_minutes)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def get_schedule(db: Session, schedule_id: UUID) -> Optional[WorkflowScheduleORM]:
+    return db.query(WorkflowScheduleORM).filter(WorkflowScheduleORM.id == schedule_id).first()
+
+
+def list_schedules_for_workflow(db: Session, workflow_id: UUID) -> List[WorkflowScheduleORM]:
+    return (db.query(WorkflowScheduleORM)
+            .filter(WorkflowScheduleORM.workflow_id == workflow_id)
+            .order_by(WorkflowScheduleORM.created_at.asc()).all())
+
+
+def list_all_enabled_schedules(db: Session) -> List[WorkflowScheduleORM]:
+    return (db.query(WorkflowScheduleORM)
+            .filter(WorkflowScheduleORM.enabled.is_(True)).all())
+
+
+def update_schedule(db: Session, schedule_id: UUID, **kwargs) -> Optional[WorkflowScheduleORM]:
+    row = db.query(WorkflowScheduleORM).filter(WorkflowScheduleORM.id == schedule_id).first()
+    if row is None:
+        return None
+    for key, value in kwargs.items():
+        setattr(row, key, value)
+    db.commit(); db.refresh(row)
+    return row
+
+
+def delete_schedule(db: Session, schedule_id: UUID) -> bool:
+    row = db.query(WorkflowScheduleORM).filter(WorkflowScheduleORM.id == schedule_id).first()
     if row is None:
         return False
     db.delete(row); db.commit()

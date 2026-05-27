@@ -97,6 +97,47 @@ docker exec -it postgres psql -U postgres -d agent_db \
 
 ---
 
+## Why These Technologies?
+
+### AI Framework — LangGraph
+
+LangGraph was chosen over CrewAI, AutoGen, and a custom runtime because it exposes **first-class `StateGraph` primitives** that map directly onto the visual workflow canvas. Each node in the UI becomes a LangGraph node; each edge becomes a `add_edge()` or `add_conditional_edges()` call. The `WorkflowState` TypedDict is the message bus — agents communicate asynchronously by writing `current_output`, which the next node reads as its input. This is graph-native async message passing, not direct agent-to-agent calls.
+
+Additional reasons:
+- **Conditional routing built-in** (`add_conditional_edges` with a router closure) — enables feedback loops and branching without a hand-rolled BFS scheduler
+- **Checkpointing** — LangGraph supports node-level state persistence; this project saves each node's input/output to `workflow_execution_checkpoints`
+- **Per-agent sub-graphs** — each agent itself runs a LangGraph `StateGraph` (`llm_node → tool_node → END`) inside the workflow graph
+
+### Backend — Python + FastAPI
+
+- **Async-first**: FastAPI's `BackgroundTasks` enables non-blocking workflow execution — the POST `/execute` endpoint returns 202 immediately while the graph runs in the background
+- **Type safety**: Pydantic schemas catch malformed workflow definitions at the API boundary before they reach LangGraph
+- **Auto-generated OpenAPI docs** at `/docs` — usable without a separate client
+
+### Frontend — React + React Flow
+
+- **React Flow v11** is the standard library for node-graph UIs; it provides drag-and-drop, `ConnectionMode.Loose`, `MarkerType` arrowheads, and `useReactFlow().project()` out of the box — no custom canvas math needed
+- **Zustand** for lightweight sidebar state (persisted to `localStorage`)
+- **Recharts** for live cost/token charts on the Dashboard
+
+### Persistence — PostgreSQL + pgvector
+
+- **Relational structure** for agents, workflows, executions, messages, and tool definitions
+- **JSONB columns** (`config`, `definition`, `node_outputs`) for schema-flexible data without a separate document store
+- **pgvector extension** available for future semantic memory/embedding features without adding a second database
+
+### Messaging — Redis
+
+Redis provides the pub/sub infrastructure for future async task handoff between agents. The `QueueManager` (`backend/services/queue_manager.py`) is wired but acts as an extension point — Telegram webhook processing already routes through it.
+
+### Observability — Prometheus + Jaeger + Grafana
+
+- Full distributed tracing from HTTP request through LangGraph node execution to database write (OTLP → Jaeger)
+- Per-provider token and cost counters available as Prometheus metrics, dashboarded in Grafana
+- Structured JSON logs (structlog) broadcast over WebSocket to the Live Logs page in real time
+
+---
+
 ## Architecture
 
 ```

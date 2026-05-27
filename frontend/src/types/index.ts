@@ -166,3 +166,28 @@ export interface ToolTestResponse {
   duration_ms: number
   error?: string
 }
+
+export interface WorkflowSchedule {
+  id: string
+  workflow_id: string
+  task: string
+  cron_expression?: string
+  interval_minutes?: number
+  enabled: boolean
+  last_run_at?: string
+  next_run_at?: string
+  created_at: string
+}
+
+export interface ScheduleCreate {
+  task: string
+  cron_expression?: string
+  interval_minutes?: number
+}
+
+export interface ScheduleUpdate {
+  task?: string
+  cron_expression?: string
+  interval_minutes?: number
+  enabled?: boolean
+}

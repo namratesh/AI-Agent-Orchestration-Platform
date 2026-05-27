@@ -1,13 +1,13 @@
 import axios from 'axios'
 import type {
-  Agent, AgentCreate, ExecutionRecord, StatsResponse,
+  Agent, AgentCreate, ExecutionRecord, ScheduleCreate, ScheduleUpdate, StatsResponse,
   TelegramMapping, Tool, ToolCreate, ToolTestRequest, ToolTestResponse, ToolUpdate,
-  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse,
+  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse, WorkflowSchedule,
 } from './types'
 
-export type { Agent, AgentCreate, ExecutionRecord, StatsResponse,
+export type { Agent, AgentCreate, ExecutionRecord, ScheduleCreate, ScheduleUpdate, StatsResponse,
   TelegramMapping, Tool, ToolCreate, ToolTestRequest, ToolTestResponse, ToolUpdate,
-  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse }
+  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse, WorkflowSchedule }
 
 export const api = axios.create({ baseURL: '' })
 
@@ -55,3 +55,13 @@ export const updateTool   = (id: string, data: ToolUpdate) =>
 export const deleteTool   = (id: string) => api.delete(`/tools/${id}`)
 export const testTool     = (id: string, data: ToolTestRequest) =>
   api.post<ToolTestResponse>(`/tools/${id}/test`, data).then(r => r.data)
+
+// ── Schedules ─────────────────────────────────────────────────────────────────
+export const listSchedules   = (workflowId: string) =>
+  api.get<WorkflowSchedule[]>(`/workflows/${workflowId}/schedules`).then(r => r.data)
+export const createSchedule  = (workflowId: string, data: ScheduleCreate) =>
+  api.post<WorkflowSchedule>(`/workflows/${workflowId}/schedules`, data).then(r => r.data)
+export const updateScheduleApi = (scheduleId: string, data: ScheduleUpdate) =>
+  api.put<WorkflowSchedule>(`/schedules/${scheduleId}`, data).then(r => r.data)
+export const deleteScheduleApi = (scheduleId: string) =>
+  api.delete(`/schedules/${scheduleId}`)
