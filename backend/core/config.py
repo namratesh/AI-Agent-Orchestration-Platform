@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     TAVILY_API_KEY: str = ""
 
+    TOOL_ENCRYPTION_KEY: str = ""
+
     TELEGRAM_BOT_TOKEN: str = ""
 
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/agent_db"

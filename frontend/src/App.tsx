@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -14,9 +14,13 @@ import WorkflowExecutor from './pages/WorkflowExecutor'
 import ExecutionLogs   from './pages/ExecutionLogs'
 import ExecutionHistory from './pages/ExecutionHistory'
 import Settings        from './pages/Settings'
+import Tools           from './pages/Tools'
+import Workspace       from './pages/Workspace'
 
 function Layout() {
   const collapsed = useAppStore(s => s.sidebarCollapsed)
+  const { pathname } = useLocation()
+  const isWorkspace = pathname === '/workspace'
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 transition-colors duration-200">
@@ -29,18 +33,25 @@ function Layout() {
           collapsed ? 'pl-16' : 'pl-60',
         )}
       >
-        <div className="p-6 max-w-[1600px] mx-auto">
+        {isWorkspace ? (
           <Routes>
-            <Route path="/"          element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/agents"    element={<AgentBuilder />} />
-            <Route path="/workflows" element={<WorkflowBuilder />} />
-            <Route path="/executor"  element={<WorkflowExecutor />} />
-            <Route path="/logs"      element={<ExecutionLogs />} />
-            <Route path="/history"   element={<ExecutionHistory />} />
-            <Route path="/settings"  element={<Settings />} />
+            <Route path="/workspace" element={<Workspace />} />
           </Routes>
-        </div>
+        ) : (
+          <div className="p-6 max-w-[1600px] mx-auto">
+            <Routes>
+              <Route path="/"          element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/agents"    element={<AgentBuilder />} />
+              <Route path="/workflows" element={<WorkflowBuilder />} />
+              <Route path="/executor"  element={<WorkflowExecutor />} />
+              <Route path="/logs"      element={<ExecutionLogs />} />
+              <Route path="/history"   element={<ExecutionHistory />} />
+              <Route path="/tools"     element={<Tools />} />
+              <Route path="/settings"  element={<Settings />} />
+            </Routes>
+          </div>
+        )}
       </main>
 
       <Toaster

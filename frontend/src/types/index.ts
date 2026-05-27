@@ -21,8 +21,9 @@ export interface AgentCreate {
 
 export interface WorkflowNode {
   id: string
-  type: 'AGENT' | 'CONDITION' | 'HUMAN_APPROVAL'
+  type: 'AGENT' | 'CONDITION' | 'HUMAN_APPROVAL' | 'TOOL'
   agent_id?: string
+  tool_id?: string
   config: Record<string, unknown>
 }
 
@@ -36,6 +37,7 @@ export interface EdgeCondition {
 export interface WorkflowEdge {
   source_node_id: string
   target_node_id: string
+  connection_type?: 'agent_sequence' | 'tool_to_agent' | 'agent_to_tool' | 'tool_chain'
   condition?: EdgeCondition
 }
 
@@ -108,4 +110,48 @@ export interface TelegramMapping {
   chat_id: string
   workflow_id: string
   username?: string
+}
+
+export interface Tool {
+  id: string
+  name: string
+  description: string
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  url: string
+  headers: Record<string, string>
+  body_template: string
+  api_key: string
+  api_key_header: string
+  api_key_prefix: string
+  timeout_seconds: number
+  created_at: string
+}
+
+export interface ToolCreate {
+  name: string
+  description: string
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  url: string
+  headers: Record<string, string>
+  body_template: string
+  api_key: string
+  api_key_header: string
+  api_key_prefix: string
+  timeout_seconds: number
+}
+
+export interface ToolUpdate extends Partial<ToolCreate> {}
+
+export interface ToolTestRequest {
+  variables: Record<string, string>
+  body_override?: string
+  params: Record<string, string>
+}
+
+export interface ToolTestResponse {
+  status_code: number
+  response_body: string
+  response_headers: Record<string, string>
+  duration_ms: number
+  error?: string
 }

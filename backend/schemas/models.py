@@ -38,15 +38,22 @@ class AgentCreate(BaseModel):
 
 class WorkflowNode(BaseModel):
     id: str
-    type: Literal["AGENT", "CONDITION", "HUMAN_APPROVAL"]
+    type: Literal["AGENT", "CONDITION", "HUMAN_APPROVAL", "TOOL"]
     agent_id: Optional[UUID] = None
+    tool_id: Optional[UUID] = None
     config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EdgeConditionSchema(BaseModel):
+    type: str
+    value: str = ""
 
 
 class WorkflowEdge(BaseModel):
     source_node_id: str
     target_node_id: str
-    condition: Optional[str] = None
+    connection_type: Optional[str] = None
+    condition: Optional[EdgeConditionSchema] = None
 
 
 class WorkflowDefinition(BaseModel):
@@ -160,3 +167,62 @@ class StatsResponse(BaseModel):
     executions_today: int
     cost_this_month: float
     recent_executions: List[ExecutionRecord]
+
+
+# ── Tool ─────────────────────────────────────────────────────────────────────
+
+class Tool(BaseModel):
+    id: UUID = Field(default_factory=uuid.uuid4)
+    name: str
+    description: str = ""
+    method: str = "GET"
+    url: str = ""
+    headers: Dict[str, str] = Field(default_factory=dict)
+    body_template: str = ""
+    api_key: str = ""
+    api_key_header: str = "Authorization"
+    api_key_prefix: str = "Bearer"
+    timeout_seconds: int = 30
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    model_config = {"from_attributes": True}
+
+
+class ToolCreate(BaseModel):
+    name: str
+    description: str = ""
+    method: str = "GET"
+    url: str
+    headers: Dict[str, str] = Field(default_factory=dict)
+    body_template: str = ""
+    api_key: str = ""
+    api_key_header: str = "Authorization"
+    api_key_prefix: str = "Bearer"
+    timeout_seconds: int = 30
+
+
+class ToolUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    method: Optional[str] = None
+    url: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    body_template: Optional[str] = None
+    api_key: Optional[str] = None
+    api_key_header: Optional[str] = None
+    api_key_prefix: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+
+
+class ToolTestRequest(BaseModel):
+    variables: Dict[str, str] = Field(default_factory=dict)
+    body_override: Optional[str] = None
+    params: Dict[str, str] = Field(default_factory=dict)
+
+
+class ToolTestResponse(BaseModel):
+    status_code: int
+    response_body: str
+    response_headers: Dict[str, str]
+    duration_ms: float
+    error: Optional[str] = None

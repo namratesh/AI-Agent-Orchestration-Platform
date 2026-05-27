@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
-from db.db import create_workflow, get_db, get_workflow, list_checkpoints, list_workflows
+from db.db import create_workflow, delete_workflow, get_db, get_workflow, list_checkpoints, list_workflows
 from schemas.models import (CheckpointResponse, ExecuteRequest, Workflow,
                             WorkflowCreate, WorkflowExecuteResponse)
 from services.workflow_executor import workflow_executor
@@ -52,6 +52,13 @@ def execute_workflow_endpoint(workflow_id: UUID, payload: ExecuteRequest,
                                    trace_id=trace_id,
                                    execution_id=outcome.get("execution_id"),
                                    execution_time_seconds=outcome.get("execution_time_seconds", 0.0))
+
+
+@router.delete("/{workflow_id}", status_code=204)
+def delete_workflow_endpoint(workflow_id: UUID, db: Session = Depends(get_db)):
+    if not delete_workflow(db, workflow_id):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    logger.info("workflow_deleted", workflow_id=str(workflow_id))
 
 
 @router.get("/{workflow_id}/checkpoints", response_model=List[CheckpointResponse])

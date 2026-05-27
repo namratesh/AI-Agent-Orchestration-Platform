@@ -79,6 +79,23 @@ class TelegramChatMappingORM(Base):
     created_at  = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
+class ToolORM(Base):
+    __tablename__ = "tools"
+
+    id              = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name            = Column(Text, nullable=False)
+    description     = Column(Text, nullable=False, default="")
+    method          = Column(String(10), nullable=False, default="GET")
+    url             = Column(Text, nullable=False, default="")
+    headers         = Column(JSONB, nullable=False, default=dict)
+    body_template   = Column(Text, nullable=False, default="")
+    api_key         = Column(Text, nullable=False, default="")
+    api_key_header  = Column(String(255), nullable=False, default="Authorization")
+    api_key_prefix  = Column(String(50), nullable=False, default="Bearer")
+    timeout_seconds = Column(Integer, nullable=False, default=30)
+    created_at      = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
 class WorkflowExecutionORM(Base):
     __tablename__ = "workflow_executions"
 
@@ -279,3 +296,51 @@ def sum_cost_this_month(db: Session) -> float:
         WorkflowExecutionORM.created_at >= func.now() - text("INTERVAL '30 days'")
     ).scalar()
     return float(result or 0.0)
+
+
+# ── Tool ──────────────────────────────────────────────────────────────────────
+
+def create_tool(db: Session, *, name: str, description: str, method: str,
+                url: str, headers: dict, body_template: str, api_key: str,
+                api_key_header: str, api_key_prefix: str,
+                timeout_seconds: int) -> ToolORM:
+    tool = ToolORM(name=name, description=description, method=method,
+                   url=url, headers=headers, body_template=body_template,
+                   api_key=api_key, api_key_header=api_key_header,
+                   api_key_prefix=api_key_prefix, timeout_seconds=timeout_seconds)
+    db.add(tool); db.commit(); db.refresh(tool)
+    return tool
+
+
+def get_tool(db: Session, tool_id: UUID) -> Optional[ToolORM]:
+    return db.query(ToolORM).filter(ToolORM.id == tool_id).first()
+
+
+def list_tools(db: Session) -> List[ToolORM]:
+    return db.query(ToolORM).order_by(ToolORM.created_at.desc()).all()
+
+
+def update_tool(db: Session, tool_id: UUID, **kwargs) -> Optional[ToolORM]:
+    row = db.query(ToolORM).filter(ToolORM.id == tool_id).first()
+    if row is None:
+        return None
+    for key, value in kwargs.items():
+        setattr(row, key, value)
+    db.commit(); db.refresh(row)
+    return row
+
+
+def delete_tool(db: Session, tool_id: UUID) -> bool:
+    row = db.query(ToolORM).filter(ToolORM.id == tool_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+def delete_workflow(db: Session, workflow_id: UUID) -> bool:
+    row = db.query(WorkflowORM).filter(WorkflowORM.id == workflow_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
