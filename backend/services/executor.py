@@ -1,6 +1,6 @@
 from __future__ import annotations
 import time
-from typing import Any, Dict, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -54,26 +54,54 @@ def web_search(query: str) -> str:
     span = otel_trace.get_current_span()
     span.set_attribute("tool.name", "web_search")
     span.set_attribute("query", query[:200])
-    return (
-        f"[mock search results for '{query}'] "
-        "1. Example result: AI agents are autonomous software entities. "
-        "2. LangGraph enables stateful multi-actor applications. "
-        "3. OpenRouter provides unified LLM access."
-    )
+
+    from tavily import TavilyClient
+    api_key = settings.TAVILY_API_KEY
+    if not api_key or api_key.startswith("tvly-..."):
+        return "Web search is not configured. Set TAVILY_API_KEY in .env to enable it."
+
+    client = TavilyClient(api_key=api_key)
+    response = client.search(query, max_results=5)
+    results: List[Dict] = response.get("results", [])
+    if not results:
+        return f"No results found for: {query}"
+
+    lines = [
+        f"{i}. {r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
+        for i, r in enumerate(results, 1)
+    ]
+    return "\n".join(lines)
 
 
 class AgentState(TypedDict):
     task: str
     system_prompt: str
     result: str
-    tool_calls: list
+    search_results: Optional[str]
+    tool_names: list
     tokens_used: int
 
 
+def tool_node(state: AgentState) -> AgentState:
+    if "web_search" not in state.get("tool_names", []):
+        return state
+    results = web_search(state["task"])
+    return {**state, "search_results": results}
+
+
 def call_llm_node(llm, state: AgentState) -> AgentState:
+    search_results = state.get("search_results")
+    if search_results:
+        user_content = (
+            f"Search results for context:\n{search_results}\n\n"
+            f"Using the above search results, answer the following:\n{state['task']}"
+        )
+    else:
+        user_content = state["task"]
+
     messages = [
         SystemMessage(content=state["system_prompt"]),
-        HumanMessage(content=state["task"]),
+        HumanMessage(content=user_content),
     ]
     response = llm.invoke(messages)
     content = response.content
@@ -88,25 +116,20 @@ def call_llm_node(llm, state: AgentState) -> AgentState:
     return {**state, "result": content, "tokens_used": tokens}
 
 
-def tool_node(state: AgentState) -> AgentState:
-    results = []
-    for call in state.get("tool_calls", []):
-        if call.get("name") == "web_search":
-            results.append(web_search(call.get("args", {}).get("query", "")))
-    return {**state, "tool_calls": results}
-
-
-def should_use_tool(state: AgentState) -> str:
-    return "tool" if state.get("tool_calls") else END
-
-
-def build_graph(llm):
+def build_graph(llm, has_web_search: bool):
     graph = StateGraph(AgentState)
     graph.add_node("llm", lambda s: call_llm_node(llm, s))
-    graph.add_node("tool", tool_node)
-    graph.set_entry_point("llm")
-    graph.add_conditional_edges("llm", should_use_tool, {"tool": "tool", END: END})
-    graph.add_edge("tool", END)
+
+    if has_web_search:
+        # search first → feed results to LLM
+        graph.add_node("tool", tool_node)
+        graph.set_entry_point("tool")
+        graph.add_edge("tool", "llm")
+        graph.add_edge("llm", END)
+    else:
+        graph.set_entry_point("llm")
+        graph.add_edge("llm", END)
+
     return graph.compile()
 
 
@@ -130,27 +153,27 @@ class AgentExecutor:
             span.set_attribute("provider", agent_row.provider)
             span.set_attribute("model", agent_row.model)
 
+            has_web_search = "web_search" in (agent_row.tools or [])
             llm = LLMFactory.get_llm(agent_row.model, agent_row.provider)
-            graph = build_graph(llm)
+            graph = build_graph(llm, has_web_search)
 
-            tool_calls = []
-            if "web_search" in (agent_row.tools or []):
-                tool_calls = [{"name": "web_search", "args": {"query": task}}]
+            if has_web_search:
                 log.info("tool_call", tool="web_search", query=task)
 
             initial_state: AgentState = {
                 "task": task,
                 "system_prompt": agent_row.system_prompt,
                 "result": "",
-                "tool_calls": tool_calls,
+                "search_results": None,
+                "tool_names": agent_row.tools or [],
                 "tokens_used": 0,
             }
 
             final_state = graph.invoke(initial_state)
 
-            if tool_calls:
+            if has_web_search:
                 log.info("tool_result", tool="web_search",
-                         result=final_state.get("tool_calls", []))
+                         result=(final_state.get("search_results") or "")[:200])
 
             tokens = final_state["tokens_used"]
             cost = round((tokens / 1000) * COST_PER_1K.get(agent_row.provider, 0.002), 8)
