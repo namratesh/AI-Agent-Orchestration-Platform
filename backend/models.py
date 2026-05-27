@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 import uuid
 from pydantic import BaseModel, Field
@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 AgentConfig = Dict[str, Any]
 
+
+# ── Agent ─────────────────────────────────────────────────────────────────────
 
 class Agent(BaseModel):
     id: UUID = Field(default_factory=uuid.uuid4)
@@ -32,13 +34,41 @@ class AgentCreate(BaseModel):
     config: AgentConfig = Field(default_factory=dict)
 
 
+# ── Workflow ──────────────────────────────────────────────────────────────────
+
+class WorkflowNode(BaseModel):
+    id: str
+    type: Literal["AGENT", "CONDITION", "HUMAN_APPROVAL"]
+    agent_id: Optional[UUID] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowEdge(BaseModel):
+    source_node_id: str
+    target_node_id: str
+    condition: Optional[str] = None  # Python expression — not evaluated yet
+
+
+class WorkflowDefinition(BaseModel):
+    nodes: List[WorkflowNode]
+    edges: List[WorkflowEdge]
+    start_node_id: str
+
+
 class Workflow(BaseModel):
     id: UUID = Field(default_factory=uuid.uuid4)
     name: str
-    definition: Dict[str, Any] = Field(default_factory=dict)
+    definition: WorkflowDefinition
 
     model_config = {"from_attributes": True}
 
+
+class WorkflowCreate(BaseModel):
+    name: str
+    definition: WorkflowDefinition
+
+
+# ── Message ───────────────────────────────────────────────────────────────────
 
 class Message(BaseModel):
     id: UUID = Field(default_factory=uuid.uuid4)
@@ -54,6 +84,20 @@ class Message(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ── Checkpoint ────────────────────────────────────────────────────────────────
+
+class CheckpointResponse(BaseModel):
+    id: UUID
+    workflow_id: UUID
+    node_id: str
+    state: Dict[str, Any]
+    timestamp: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── Requests / Responses ──────────────────────────────────────────────────────
+
 class ExecuteRequest(BaseModel):
     task: str
 
@@ -64,4 +108,11 @@ class ExecuteResponse(BaseModel):
     result: str
     tokens_used: int
     cost: float
+    trace_id: str
+
+
+class WorkflowExecuteResponse(BaseModel):
+    workflow_id: UUID
+    task: str
+    result: str
     trace_id: str
