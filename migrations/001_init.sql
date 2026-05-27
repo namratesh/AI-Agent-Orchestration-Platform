@@ -2,22 +2,22 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS agents (
-    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name        TEXT NOT NULL,
-    role        TEXT NOT NULL,
+    id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name          TEXT NOT NULL,
+    role          TEXT NOT NULL,
     system_prompt TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    provider    TEXT NOT NULL,
-    tools       JSONB NOT NULL DEFAULT '[]',
-    config      JSONB NOT NULL DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    model         TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    tools         JSONB NOT NULL DEFAULT '[]',
+    config        JSONB NOT NULL DEFAULT '{}',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS workflows (
-    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name        TEXT NOT NULL,
-    definition  JSONB NOT NULL DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name       TEXT NOT NULL,
+    definition JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -32,6 +32,16 @@ CREATE TABLE IF NOT EXISTS messages (
     timestamp    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_workflow_id ON messages(workflow_id);
-CREATE INDEX IF NOT EXISTS idx_messages_timestamp   ON messages(timestamp);
-CREATE INDEX IF NOT EXISTS idx_agents_provider      ON agents(provider);
+CREATE TABLE IF NOT EXISTS workflow_execution_checkpoints (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    node_id     TEXT NOT NULL,
+    state       JSONB NOT NULL DEFAULT '{}',
+    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_workflow_id      ON messages(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp        ON messages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_agents_provider           ON agents(provider);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_workflow_id   ON workflow_execution_checkpoints(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_timestamp     ON workflow_execution_checkpoints(timestamp);

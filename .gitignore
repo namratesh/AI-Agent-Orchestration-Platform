@@ -90,3 +90,5 @@ checkpoints/
 *.cert
 secrets/
 credentials/
+
+.claude/
