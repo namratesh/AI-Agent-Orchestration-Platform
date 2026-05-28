@@ -18,8 +18,10 @@ from opentelemetry import trace as otel_trace
 
 from core.logging_config import get_logger
 from db.db import (SessionLocal, get_tool, get_workflow, save_checkpoint,
-                   save_execution, update_execution)
+                   save_execution, update_execution,
+                   list_enabled_integrations_for_workflow)
 from instrumentation import record_workflow_execution
+from services.channel_notifier import notify as channel_notify
 from services.executor import agent_executor
 
 logger = get_logger(__name__)
@@ -290,6 +292,10 @@ class WorkflowExecutor:
                      tokens=tokens, cost=cost, elapsed=round(elapsed, 3),
                      result_preview=result[:120],
                      node_outputs_count=len(node_outputs))
+
+            # Notify any enabled channel integrations (Telegram / Slack)
+            for integration in list_enabled_integrations_for_workflow(db, workflow_id):
+                channel_notify(integration, result)
 
             record_workflow_execution(status="success")
 

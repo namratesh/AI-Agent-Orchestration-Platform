@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 
-from api import agents, executions, logs, schedules, stats, telegram, tools, workflows
+from api import agents, executions, integrations, logs, schedules, slack, stats, telegram, tools, workflows
 from core.logging_config import get_logger, setup_logging
 from db.db import engine
 from instrumentation import setup_otel
@@ -30,6 +30,8 @@ app.mount("/metrics", make_asgi_app())
 app.include_router(agents.router)
 app.include_router(workflows.router)
 app.include_router(schedules.router)
+app.include_router(integrations.router)
+app.include_router(slack.router)
 app.include_router(telegram.router)
 app.include_router(logs.router)
 app.include_router(executions.router)

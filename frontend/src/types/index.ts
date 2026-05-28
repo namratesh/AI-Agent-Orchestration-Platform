@@ -191,3 +191,22 @@ export interface ScheduleUpdate {
   interval_minutes?: number
   enabled?: boolean
 }
+
+export interface WorkflowIntegration {
+  id: string
+  workflow_id: string
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>
+  enabled: boolean
+  created_at: string
+}
+
+export interface IntegrationCreate {
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>
+}
+
+export interface IntegrationUpdate {
+  config?: Record<string, string>
+  enabled?: boolean
+}

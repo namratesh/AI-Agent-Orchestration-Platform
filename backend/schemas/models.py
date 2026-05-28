@@ -261,3 +261,38 @@ class ScheduleUpdate(BaseModel):
     cron_expression: Optional[str] = None
     interval_minutes: Optional[int] = None
     enabled: Optional[bool] = None
+
+
+# ── Channel integrations ──────────────────────────────────────────────────────
+
+class WorkflowIntegration(BaseModel):
+    id: UUID
+    workflow_id: UUID
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class IntegrationCreate(BaseModel):
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+    def validate_config(self) -> None:
+        if self.channel_type == "telegram":
+            if not self.config.get("bot_token") or not self.config.get("chat_id"):
+                raise ValueError("Telegram requires bot_token and chat_id")
+        elif self.channel_type == "slack":
+            missing = [f for f in ("bot_token", "signing_secret", "channel_id")
+                       if not self.config.get(f)]
+            if missing:
+                raise ValueError(f"Slack requires: {', '.join(missing)}")
+        else:
+            raise ValueError(f"Unsupported channel_type: {self.channel_type!r}")
+
+
+class IntegrationUpdate(BaseModel):
+    config: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None

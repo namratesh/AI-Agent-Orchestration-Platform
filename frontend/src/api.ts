@@ -1,13 +1,15 @@
 import axios from 'axios'
 import type {
-  Agent, AgentCreate, ExecutionRecord, ScheduleCreate, ScheduleUpdate, StatsResponse,
-  TelegramMapping, Tool, ToolCreate, ToolTestRequest, ToolTestResponse, ToolUpdate,
-  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse, WorkflowSchedule,
+  Agent, AgentCreate, ExecutionRecord, IntegrationCreate, IntegrationUpdate, ScheduleCreate,
+  ScheduleUpdate, StatsResponse, TelegramMapping, Tool, ToolCreate, ToolTestRequest,
+  ToolTestResponse, ToolUpdate, Workflow, WorkflowCreate, WorkflowDefinition,
+  WorkflowExecuteResponse, WorkflowIntegration, WorkflowSchedule,
 } from './types'
 
-export type { Agent, AgentCreate, ExecutionRecord, ScheduleCreate, ScheduleUpdate, StatsResponse,
-  TelegramMapping, Tool, ToolCreate, ToolTestRequest, ToolTestResponse, ToolUpdate,
-  Workflow, WorkflowCreate, WorkflowDefinition, WorkflowExecuteResponse, WorkflowSchedule }
+export type { Agent, AgentCreate, ExecutionRecord, IntegrationCreate, IntegrationUpdate,
+  ScheduleCreate, ScheduleUpdate, StatsResponse, TelegramMapping, Tool, ToolCreate,
+  ToolTestRequest, ToolTestResponse, ToolUpdate, Workflow, WorkflowCreate, WorkflowDefinition,
+  WorkflowExecuteResponse, WorkflowIntegration, WorkflowSchedule }
 
 export const api = axios.create({ baseURL: '' })
 
@@ -65,3 +67,13 @@ export const updateScheduleApi = (scheduleId: string, data: ScheduleUpdate) =>
   api.put<WorkflowSchedule>(`/schedules/${scheduleId}`, data).then(r => r.data)
 export const deleteScheduleApi = (scheduleId: string) =>
   api.delete(`/schedules/${scheduleId}`)
+
+// ── Integrations ───────────────────────────────────────────────────────────────
+export const listIntegrations   = (workflowId: string) =>
+  api.get<WorkflowIntegration[]>(`/workflows/${workflowId}/integrations`).then(r => r.data)
+export const createIntegration  = (workflowId: string, data: IntegrationCreate) =>
+  api.post<WorkflowIntegration>(`/workflows/${workflowId}/integrations`, data).then(r => r.data)
+export const updateIntegrationApi = (integrationId: string, data: IntegrationUpdate) =>
+  api.put<WorkflowIntegration>(`/integrations/${integrationId}`, data).then(r => r.data)
+export const deleteIntegrationApi = (integrationId: string) =>
+  api.delete(`/integrations/${integrationId}`)

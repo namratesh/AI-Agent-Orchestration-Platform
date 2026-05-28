@@ -126,6 +126,17 @@ class WorkflowScheduleORM(Base):
     created_at       = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
+class WorkflowIntegrationORM(Base):
+    __tablename__ = "workflow_integrations"
+
+    id           = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id  = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    channel_type = Column(Text, nullable=False)
+    config       = Column(JSONB, nullable=False, default=dict)
+    enabled      = Column(Boolean, nullable=False, default=True)
+    created_at   = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
 # ── Session dependency ────────────────────────────────────────────────────────
 
 def get_db():
@@ -429,6 +440,60 @@ def update_schedule(db: Session, schedule_id: UUID, **kwargs) -> Optional[Workfl
 
 def delete_schedule(db: Session, schedule_id: UUID) -> bool:
     row = db.query(WorkflowScheduleORM).filter(WorkflowScheduleORM.id == schedule_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Workflow channel integrations ─────────────────────────────────────────────
+
+def create_integration(db: Session, *, workflow_id: UUID, channel_type: str,
+                       config: dict) -> WorkflowIntegrationORM:
+    row = WorkflowIntegrationORM(workflow_id=workflow_id, channel_type=channel_type, config=config)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def get_integration(db: Session, integration_id: UUID) -> Optional[WorkflowIntegrationORM]:
+    return db.query(WorkflowIntegrationORM).filter(WorkflowIntegrationORM.id == integration_id).first()
+
+
+def list_integrations_for_workflow(db: Session, workflow_id: UUID) -> List[WorkflowIntegrationORM]:
+    return (db.query(WorkflowIntegrationORM)
+            .filter(WorkflowIntegrationORM.workflow_id == workflow_id)
+            .order_by(WorkflowIntegrationORM.created_at.asc()).all())
+
+
+def list_enabled_integrations_for_workflow(db: Session, workflow_id: UUID) -> List[WorkflowIntegrationORM]:
+    return (db.query(WorkflowIntegrationORM)
+            .filter(WorkflowIntegrationORM.workflow_id == workflow_id,
+                    WorkflowIntegrationORM.enabled.is_(True)).all())
+
+
+def find_slack_integration_by_channel(db: Session, channel_id: str) -> Optional[WorkflowIntegrationORM]:
+    """Find the first enabled Slack integration whose config contains the given channel_id."""
+    rows = (db.query(WorkflowIntegrationORM)
+              .filter(WorkflowIntegrationORM.channel_type == "slack",
+                      WorkflowIntegrationORM.enabled.is_(True)).all())
+    for row in rows:
+        if (row.config or {}).get("channel_id") == channel_id:
+            return row
+    return None
+
+
+def update_integration(db: Session, integration_id: UUID, **kwargs) -> Optional[WorkflowIntegrationORM]:
+    row = db.query(WorkflowIntegrationORM).filter(WorkflowIntegrationORM.id == integration_id).first()
+    if row is None:
+        return None
+    for key, value in kwargs.items():
+        setattr(row, key, value)
+    db.commit(); db.refresh(row)
+    return row
+
+
+def delete_integration(db: Session, integration_id: UUID) -> bool:
+    row = db.query(WorkflowIntegrationORM).filter(WorkflowIntegrationORM.id == integration_id).first()
     if row is None:
         return False
     db.delete(row); db.commit()
