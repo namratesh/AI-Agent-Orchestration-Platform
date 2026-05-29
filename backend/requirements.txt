@@ -25,3 +25,4 @@ prometheus-client
 tavily-python==0.5.1
 cryptography==44.0.3
 apscheduler==3.10.4
+rq==2.3.3

@@ -11,6 +11,8 @@ from db.db import (create_execution_queued, create_workflow, delete_workflow,
                    get_db, get_workflow, list_checkpoints, list_workflows)
 from schemas.models import (CheckpointResponse, ExecuteRequest, Workflow,
                             WorkflowCreate, WorkflowExecuteResponse)
+from services.queue import QUEUE_AVAILABLE, execution_queue
+from services.tasks import run_workflow
 from services.workflow_executor import validate_workflow_definition, workflow_executor
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -72,9 +74,23 @@ def execute_workflow_endpoint(workflow_id: UUID, payload: ExecuteRequest,
     # Create the execution record immediately (status="queued") so the client
     # can poll GET /executions/{id} for the result.
     exec_row = create_execution_queued(db, workflow_id=workflow_id, task=payload.task)
-    background_tasks.add_task(
-        _run_workflow_bg, exec_row.id, workflow_id, payload.task, trace_id, "ui"
-    )
+
+    if QUEUE_AVAILABLE and execution_queue is not None:
+        execution_queue.enqueue(
+            run_workflow,
+            str(exec_row.id), str(workflow_id), payload.task, trace_id, "ui",
+            job_timeout=600,
+        )
+        dispatch = "rq"
+    else:
+        background_tasks.add_task(
+            _run_workflow_bg, exec_row.id, workflow_id, payload.task, trace_id, "ui"
+        )
+        dispatch = "background_task"
+
+    logger.bind(trace_id=trace_id).info("workflow_dispatched",
+                                        dispatch=dispatch,
+                                        execution_id=str(exec_row.id))
 
     return WorkflowExecuteResponse(
         workflow_id=workflow_id,
