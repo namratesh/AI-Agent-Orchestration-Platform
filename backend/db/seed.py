@@ -94,7 +94,24 @@ def run_seed(db: Session) -> Dict[str, Any]:
         config={**_DEMO_CONFIG, "temperature": 0.7, "max_tokens": 4096},
     )
 
-    # ── 4. Research → Write workflow ──────────────────────────────────────────
+    # ── 4. Analyzer Agent ─────────────────────────────────────────────────────
+    analyzer = create_agent(
+        db,
+        name="Analyzer Agent",
+        role="analyst",
+        system_prompt=(
+            "You are an analytical assistant. "
+            "Given raw research notes, extract the key themes, "
+            "assess their significance, and produce a structured "
+            "analysis with bullet points for each major finding."
+        ),
+        model="openai/gpt-3.5-turbo",
+        provider="openrouter",
+        tools=[],
+        config={**_DEMO_CONFIG, "temperature": 0.4},
+    )
+
+    # ── 5. Research → Write workflow ──────────────────────────────────────────
     workflow = create_workflow(
         db,
         name="Research & Write",
@@ -114,12 +131,40 @@ def run_seed(db: Session) -> Dict[str, Any]:
         },
     )
 
+    # ── 6. Content Pipeline workflow (3 nodes) ────────────────────────────────
+    pipeline = create_workflow(
+        db,
+        name="Content Pipeline",
+        definition={
+            "nodes": [
+                {"id": "research", "type": "AGENT", "agent_id": str(researcher.id), "config": {}},
+                {"id": "analyze",  "type": "AGENT", "agent_id": str(analyzer.id),   "config": {}},
+                {"id": "write",    "type": "AGENT", "agent_id": str(writer.id),      "config": {}},
+            ],
+            "edges": [
+                {
+                    "source_node_id": "research",
+                    "target_node_id": "analyze",
+                    "connection_type": "agent_sequence",
+                },
+                {
+                    "source_node_id": "analyze",
+                    "target_node_id": "write",
+                    "connection_type": "agent_sequence",
+                },
+            ],
+            "start_node_id": "research",
+        },
+    )
+
     result = {
         "seeded": True,
         "tool_id":        str(tool.id),
         "researcher_id":  str(researcher.id),
+        "analyzer_id":    str(analyzer.id),
         "writer_id":      str(writer.id),
         "workflow_id":    str(workflow.id),
+        "pipeline_id":    str(pipeline.id),
     }
     logger.info("seed_complete", **result)
     return result

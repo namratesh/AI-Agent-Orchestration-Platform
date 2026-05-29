@@ -10,12 +10,162 @@ import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
 import {
-  listWorkflows, executeWorkflow, deleteWorkflow,
+  listWorkflows, createWorkflow, executeWorkflow, deleteWorkflow,
   listSchedules, createSchedule, updateScheduleApi, deleteScheduleApi,
   listAgents,
 } from '../api'
 import type { Workflow, WorkflowSchedule, Agent, ExecutionRecord } from '../types'
 import { PageSpinner } from '../components/LoadingSpinner'
+
+// ─── Workflow templates ───────────────────────────────────────────────────────
+// Each node's `agentName` is matched against existing agents (case-insensitive
+// substring). Matched agents are placed as fully-assigned canvas nodes so the
+// workflow can be saved and executed immediately.
+const WORKFLOW_TEMPLATES = [
+  {
+    id: 'research-write',
+    name: 'Research & Write',
+    description: '2 agents · Research Agent gathers information, Writer Agent produces a polished article.',
+    nodes: [
+      { slotId: 'slot-research', agentName: 'Research Agent', position: { x: 100, y: 150 } },
+      { slotId: 'slot-write',    agentName: 'Writer Agent',   position: { x: 450, y: 150 } },
+    ],
+    edges: [{ source: 'slot-research', target: 'slot-write' }],
+  },
+  {
+    id: 'content-pipeline',
+    name: 'Content Pipeline',
+    description: '3 agents · Research Agent → Analyzer Agent → Writer Agent.',
+    nodes: [
+      { slotId: 'slot-research', agentName: 'Research Agent',  position: { x: 80,  y: 150 } },
+      { slotId: 'slot-analyze',  agentName: 'Analyzer Agent',  position: { x: 350, y: 150 } },
+      { slotId: 'slot-write',    agentName: 'Writer Agent',    position: { x: 620, y: 150 } },
+    ],
+    edges: [
+      { source: 'slot-research', target: 'slot-analyze' },
+      { source: 'slot-analyze',  target: 'slot-write'   },
+    ],
+  },
+]
+
+type WorkflowTemplate = typeof WORKFLOW_TEMPLATES[number]
+
+function TemplatesModal({ agents, onClose, onCreated }: { agents: Agent[]; onClose: () => void; onCreated: (wf: Workflow) => void }) {
+  const [saving, setSaving] = useState<string | null>(null)
+
+  const useTemplate = async (tpl: WorkflowTemplate) => {
+    // Resolve each slot to a real agent by name match
+    const resolved = tpl.nodes.map(slot => ({
+      ...slot,
+      agent: agents.find(a =>
+        a.name.toLowerCase().includes(slot.agentName.toLowerCase()) ||
+        slot.agentName.toLowerCase().includes(a.name.toLowerCase())
+      ),
+    }))
+
+    const unmatched = resolved.filter(n => !n.agent).map(n => n.agentName)
+    if (unmatched.length > 0) {
+      toast.error(`Missing agents: ${unmatched.join(', ')}. Create them first.`, { duration: 6000 })
+      return
+    }
+
+    setSaving(tpl.id)
+    try {
+      const nodeIds: Record<string, string> = {}
+      resolved.forEach(n => { nodeIds[n.slotId] = n.slotId })
+
+      const wf = await createWorkflow({
+        name: tpl.name,
+        definition: {
+          nodes: resolved.map(n => ({
+            id:       n.slotId,
+            type:     'AGENT' as const,
+            agent_id: n.agent!.id,
+            config:   {},
+          })),
+          edges: tpl.edges.map(e => ({
+            source_node_id:  e.source,
+            target_node_id:  e.target,
+            connection_type: 'agent_sequence' as const,
+          })),
+          start_node_id: tpl.nodes[0].slotId,
+        },
+      })
+      toast.success(`"${wf.name}" created and ready to run`)
+      onCreated(wf)
+      onClose()
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(detail ?? 'Failed to create workflow')
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-lg mx-4">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-800">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+            <Copy size={16} className="text-indigo-500" />Workflow Templates
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-3">
+          {WORKFLOW_TEMPLATES.map(tpl => {
+            const allMatched = tpl.nodes.every(n =>
+              agents.some(a =>
+                a.name.toLowerCase().includes(n.agentName.toLowerCase()) ||
+                n.agentName.toLowerCase().includes(a.name.toLowerCase())
+              )
+            )
+            return (
+              <div key={tpl.id} className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex items-start gap-4 hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{tpl.name}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">{tpl.description}</p>
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    {tpl.nodes.map((n, i) => {
+                      const matched = agents.some(a =>
+                        a.name.toLowerCase().includes(n.agentName.toLowerCase()) ||
+                        n.agentName.toLowerCase().includes(a.name.toLowerCase())
+                      )
+                      return (
+                        <span key={n.slotId} className="flex items-center gap-1">
+                          <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md font-medium ${
+                            matched
+                              ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                              : 'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+                          }`}>
+                            <Bot size={10} />{n.agentName}
+                          </span>
+                          {i < tpl.nodes.length - 1 && <ArrowRight size={10} className="text-gray-400" />}
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+                <button
+                  onClick={() => useTemplate(tpl)}
+                  disabled={saving === tpl.id || !allMatched}
+                  className="shrink-0 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                >
+                  {saving === tpl.id ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                  {saving === tpl.id ? 'Creating…' : 'Use Template'}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+        <p className="px-6 pb-5 text-xs text-gray-400 dark:text-gray-500">
+          Indigo = agent found · Amber = agent missing (create it first). Workflow is saved immediately on use.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -262,10 +412,20 @@ function ExecutionPanel({ workflow, agentMap }: { workflow: Workflow; agentMap: 
         setError('Lost connection to execution stream')
         setRunStatus('error')
       }
-    } catch (e) {
+    } catch (e: unknown) {
       setRunStatus('error')
-      setError(e instanceof Error ? e.message : 'Failed to start')
-      toast.error('Failed to start execution')
+      // Extract validation errors from 422 response detail
+      const axiosErr = e as { response?: { data?: { detail?: unknown } } }
+      const detail = axiosErr?.response?.data?.detail
+      let msg = 'Failed to start execution'
+      if (detail && typeof detail === 'object' && 'errors' in detail) {
+        const errs = (detail as { errors: string[] }).errors
+        msg = errs.join(' · ')
+      } else if (typeof detail === 'string') {
+        msg = detail
+      }
+      setError(msg)
+      toast.error(msg, { duration: 6000 })
     }
   }
 
@@ -564,6 +724,7 @@ export default function WorkflowBuilder() {
   const [loading, setLoading]             = useState(true)
   const [search, setSearch]               = useState('')
   const [selectedId, setSelectedId]       = useState<string | null>(null)
+  const [showTemplates, setShowTemplates] = useState(false)
   const navigate = useNavigate()
 
   const agentMap = new Map(agents.map(a => [a.id, a.name]))
@@ -597,6 +758,7 @@ export default function WorkflowBuilder() {
   const selected = workflows.find(w => w.id === selectedId) ?? null
 
   return (
+    <>
     <div className="animate-fade-in flex flex-col" style={{ height: 'calc(100vh - 96px)' }}>
       {/* Header */}
       <div className="flex items-center justify-between mb-4 shrink-0">
@@ -618,6 +780,12 @@ export default function WorkflowBuilder() {
           />
           <button onClick={load} className="w-8 h-8 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 flex items-center justify-center transition-colors" title="Refresh">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+          <button
+            onClick={() => setShowTemplates(true)}
+            className="flex items-center gap-1.5 border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 text-sm font-semibold px-3 py-1.5 rounded-xl transition-colors"
+          >
+            <Copy size={15} />Templates
           </button>
           <button onClick={() => navigate('/workspace')} className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-3 py-1.5 rounded-xl transition-colors">
             <Plus size={15} />New
@@ -677,5 +845,13 @@ export default function WorkflowBuilder() {
         </div>
       )}
     </div>
+    {showTemplates && (
+      <TemplatesModal
+        agents={agents}
+        onClose={() => setShowTemplates(false)}
+        onCreated={wf => { setWorkflows(prev => [...prev, wf]); setSelectedId(wf.id) }}
+      />
+    )}
+    </>
   )
 }

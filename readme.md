@@ -25,6 +25,8 @@ A full-stack platform for creating, configuring, and connecting AI agents into c
 17. [Database Schema](#database-schema)
 18. [File Structure](#file-structure)
 19. [Why These Technologies](#why-these-technologies)
+20. [Adding a Workflow Template](#adding-a-workflow-template)
+21. [Adding a Messaging Channel](#adding-a-messaging-channel)
 
 ---
 
@@ -1010,3 +1012,88 @@ pytest tests/ -v
 ```
 
 Tests run against SQLite in-memory — no PostgreSQL or Redis required. All external services (Tavily, LLM providers) are mocked.
+
+---
+
+## Adding a Workflow Template
+
+Templates are structural skeletons that open in the Workspace with placeholder nodes so users can drag real agents onto each slot before saving.
+
+### Frontend-only template (UI skeleton)
+
+Edit `frontend/src/pages/WorkflowBuilder.tsx` and add an entry to the `WORKFLOW_TEMPLATES` constant:
+
+```ts
+{
+  id: 'my-template',
+  name: 'My Template',
+  description: 'Short description shown in the Templates modal.',
+  nodes: [
+    { id: 'tpl-node-a', label: 'First Agent',  position: { x: 100, y: 150 } },
+    { id: 'tpl-node-b', label: 'Second Agent', position: { x: 400, y: 150 } },
+  ],
+  edges: [{ source: 'tpl-node-a', target: 'tpl-node-b' }],
+}
+```
+
+The `id` values use the `tpl-` prefix — `Workspace.tsx` detects non-UUID node IDs and skips the `agent_id` field so the workflow saves cleanly even before real agents are assigned.
+
+### Seeded template (real agents on fresh deploy)
+
+Add agents and a workflow in `backend/db/seed.py` inside `run_seed()`:
+
+```python
+my_agent = create_agent(db, name="My Agent", role="...", system_prompt="...", model="openai/gpt-3.5-turbo", provider="openrouter", tools=[], config=_DEMO_CONFIG)
+create_workflow(db, name="My Template", definition={
+    "nodes": [{"id": "n1", "type": "AGENT", "agent_id": str(my_agent.id), "config": {}}],
+    "edges": [],
+    "start_node_id": "n1",
+})
+```
+
+Seed runs automatically on a fresh volume (`docker compose down -v && docker compose up`). To re-seed an existing instance, call `POST /seed`.
+
+---
+
+## Adding a Messaging Channel
+
+The platform ships with Telegram and Slack. Follow this pattern to add any new channel (e.g. WhatsApp via Twilio, Discord, etc.).
+
+### 1. Database mapping table
+
+Add a migration in `migrations/` (copy `006_channel_integrations.sql` as a reference):
+
+```sql
+CREATE TABLE whatsapp_chat_mappings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    phone_number TEXT NOT NULL UNIQUE,
+    workflow_id  UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### 2. Backend router
+
+Create `backend/api/whatsapp.py` modelled on `backend/api/slack.py`:
+
+- Verify the incoming webhook signature (Twilio uses HMAC-SHA1 over the full URL + params).
+- Look up the `phone_number → workflow_id` mapping in the DB.
+- Enqueue a `run_workflow` RQ job (import from `services/tasks.py`).
+- Reply to the sender after the job completes (or acknowledge immediately with a 200 and send a follow-up message via the channel's send API).
+
+### 3. Register the router
+
+In `backend/main.py` add:
+
+```python
+from api.whatsapp import router as whatsapp_router
+app.include_router(whatsapp_router)
+```
+
+### 4. Settings UI card
+
+In `frontend/src/pages/Settings.tsx`, copy the Telegram or Slack card pattern to add a form for mapping a phone number to a workflow.
+
+### 5. Environment variables
+
+Add any API keys / secrets to `.env.example` with a descriptive comment so operators know what to fill in.
