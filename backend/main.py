@@ -32,9 +32,10 @@ _auth = [Depends(require_api_key)]
 # Prometheus metrics endpoint — populated by OTel PrometheusMetricReader
 app.mount("/metrics", make_asgi_app())
 
-# Webhooks are authenticated by their own HMAC/token mechanisms — no API key.
+# Webhooks and WebSocket endpoints cannot carry Authorization headers — no API key.
 app.include_router(slack.router)
 app.include_router(telegram.router)
+app.include_router(logs.router)   # /ws/logs — browsers can't set headers on WS upgrades
 
 # All UI-facing routers require a valid API key when API_SECRET_KEY is set.
 app.include_router(agents.router,       dependencies=_auth)
@@ -42,7 +43,6 @@ app.include_router(workflows.router,    dependencies=_auth)
 app.include_router(schedules.router,    dependencies=_auth)
 app.include_router(integrations.router, dependencies=_auth)
 app.include_router(bots.router,         dependencies=_auth)
-app.include_router(logs.router,         dependencies=_auth)
 app.include_router(executions.router,   dependencies=_auth)
 app.include_router(stats.router,        dependencies=_auth)
 app.include_router(tools.router,        dependencies=_auth)
