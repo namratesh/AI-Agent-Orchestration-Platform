@@ -57,7 +57,7 @@ A full-stack platform for creating, configuring, and connecting AI agents into c
 | LLM providers | OpenRouter, OpenAI, Groq, Ollama |
 | Web search | Tavily Search API |
 | Database | PostgreSQL 15 + pgvector extension |
-| Cache / queues | Redis 7 |
+| Cache / queues | Redis 7 + RQ (task queue) |
 | Scheduler | APScheduler 3 (BackgroundScheduler) |
 | Observability | OpenTelemetry → Jaeger, Prometheus, Grafana |
 | Messenger | Telegram Bot API (webhook) |
@@ -81,7 +81,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Seven containers start: `backend`, `frontend`, `postgres`, `redis`, `jaeger`, `prometheus`, `grafana`.
+Eight containers start: `backend`, `worker`, `frontend`, `postgres`, `redis`, `jaeger`, `prometheus`, `grafana`.
 
 Wait for:
 ```
@@ -735,9 +735,10 @@ docker exec postgres psql -U postgres -d agent_db \
 │   ├── services/
 │   │   ├── executor.py          # Single-agent LangGraph executor (LLMFactory + sub-graph)
 │   │   ├── workflow_executor.py # Multi-agent LangGraph executor (dynamic StateGraph)
+│   │   ├── tasks.py             # RQ task: run_workflow() executed by the worker container
+│   │   ├── queue.py             # Redis connection + RQ Queue with graceful fallback
 │   │   ├── scheduler.py         # APScheduler BackgroundScheduler service
 │   │   ├── log_broadcaster.py   # WebSocket log broadcasting
-│   │   ├── queue_manager.py     # Redis pub/sub extension point
 │   │   ├── crypto.py            # Fernet encryption for tool API keys
 │   │   └── telegram_handler.py  # Telegram webhook handler
 │   └── instrumentation.py       # OpenTelemetry setup (OTLP → Jaeger, Prometheus)
@@ -795,9 +796,9 @@ Relational structure for all persistent entities. JSONB columns (`config`, `defi
 
 `BackgroundScheduler` starts with the FastAPI process, loads all enabled `workflow_schedules` rows, and registers each as an interval or cron job. When a job fires it follows the exact same code path as the HTTP execute endpoint (`create_execution_queued` → `WorkflowExecutor.execute()`) — no separate worker process, no Celery, no message broker required.
 
-### Redis
+### Redis + RQ
 
-Pub/sub infrastructure for async task handoff between agents. The `QueueManager` is wired as an extension point — Telegram webhook processing already routes through it.
+Redis is used as the task queue broker via **RQ (Redis Queue)**. When a workflow is triggered, the API server enqueues a `run_workflow` job (with `job_timeout=600` and `retry=Retry(max=3, interval=[10,30,60])`) and returns 202 immediately. The dedicated `worker` container picks up jobs from the `executions` queue and runs them independently of the API process — workflows survive a backend restart. If Redis is unavailable, execution falls back to FastAPI `BackgroundTasks` automatically, so the platform degrades gracefully.
 
 ### Prometheus + Jaeger + Grafana
 

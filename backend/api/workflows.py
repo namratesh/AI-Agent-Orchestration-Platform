@@ -11,6 +11,8 @@ from db.db import (create_execution_queued, create_workflow, delete_workflow,
                    get_db, get_workflow, list_checkpoints, list_workflows)
 from schemas.models import (CheckpointResponse, ExecuteRequest, Workflow,
                             WorkflowCreate, WorkflowExecuteResponse)
+from rq import Retry
+
 from services.queue import QUEUE_AVAILABLE, execution_queue
 from services.tasks import run_workflow
 from services.workflow_executor import validate_workflow_definition, workflow_executor
@@ -80,6 +82,7 @@ def execute_workflow_endpoint(workflow_id: UUID, payload: ExecuteRequest,
             run_workflow,
             str(exec_row.id), str(workflow_id), payload.task, trace_id, "ui",
             job_timeout=600,
+            retry=Retry(max=3, interval=[10, 30, 60]),
         )
         dispatch = "rq"
     else:
