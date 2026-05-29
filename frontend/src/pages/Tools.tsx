@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import {
   Plus, Wrench, Trash2, Edit2, Play, X, ChevronDown, ChevronUp,
-  CheckCircle, XCircle, Clock, AlertCircle,
+  CheckCircle, XCircle, Clock, AlertCircle, Sparkles, ExternalLink, KeyRound,
 } from 'lucide-react'
 import {
-  listTools, createTool, updateTool, deleteTool, testTool,
+  listTools, createTool, updateTool, deleteTool, testTool, listToolTemplates,
 } from '../api'
-import type { Tool, ToolCreate, ToolTestResponse } from '../types'
+import type { Tool, ToolCreate, ToolTemplate, ToolTestResponse } from '../types'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,17 +106,29 @@ function HeaderEditor({
 
 interface ModalProps {
   initial?: Tool | null
+  template?: ToolTemplate | null   // pre-fill from a prebuilt template
   onClose: () => void
   onSaved: (tool: Tool) => void
 }
 
-function ToolModal({ initial, onClose, onSaved }: ModalProps) {
+function ToolModal({ initial, template, onClose, onSaved }: ModalProps) {
   const isEdit = !!initial
-  const [form, setForm] = useState<ToolCreate>(
-    initial
-      ? { ...initial }
-      : blankForm()
-  )
+  const [form, setForm] = useState<ToolCreate>(() => {
+    if (initial) return { ...initial }
+    if (template) return {
+      name: template.name,
+      description: template.description,
+      method: template.method as ToolCreate['method'],
+      url: template.url,
+      headers: template.headers,
+      body_template: template.body_template,
+      api_key: '',
+      api_key_header: template.api_key_header,
+      api_key_prefix: template.api_key_prefix,
+      timeout_seconds: template.timeout_seconds,
+    }
+    return blankForm()
+  })
   const [saving, setSaving] = useState(false)
 
   const set = <K extends keyof ToolCreate>(k: K, v: ToolCreate[K]) =>
@@ -132,8 +144,9 @@ function ToolModal({ initial, onClose, onSaved }: ModalProps) {
         : await createTool(form)
       onSaved(saved)
       toast.success(isEdit ? 'Tool updated' : 'Tool created')
-    } catch {
-      toast.error('Failed to save tool')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(detail ?? 'Failed to save tool')
     } finally {
       setSaving(false)
     }
@@ -182,10 +195,43 @@ function ToolModal({ initial, onClose, onSaved }: ModalProps) {
 
           {/* auth */}
           <div>
-            <label className="label">API Key / Token</label>
+            <label className="label flex items-center gap-1.5">
+              <KeyRound size={13} className="text-gray-400" />
+              API Key / Token
+              {template && !isEdit && (
+                <span className="ml-1 text-xs font-normal text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30 px-1.5 py-0.5 rounded">
+                  Required
+                </span>
+              )}
+            </label>
+            {template && !isEdit && (
+              <div className="mb-2 flex items-start gap-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 px-3 py-2">
+                <Sparkles size={14} className="text-blue-500 shrink-0 mt-0.5" />
+                <div className="text-xs text-blue-700 dark:text-blue-300">
+                  {template.setup_hint}
+                  {template.docs_url && (
+                    <a
+                      href={template.docs_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-1 inline-flex items-center gap-0.5 underline hover:text-blue-900 dark:hover:text-blue-100"
+                    >
+                      Docs <ExternalLink size={10} />
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-3 gap-2">
               <input className="input col-span-1 text-xs" value={form.api_key_prefix} onChange={e => set('api_key_prefix', e.target.value)} placeholder="Bearer" />
-              <input className="input col-span-2 font-mono text-xs" type="password" value={form.api_key} onChange={e => set('api_key', e.target.value)} placeholder="your-api-key-here" />
+              <input
+                className="input col-span-2 font-mono text-xs"
+                type="password"
+                value={form.api_key}
+                onChange={e => set('api_key', e.target.value)}
+                placeholder={template && !isEdit ? `Paste your ${template.name} key here` : 'your-api-key-here'}
+                autoFocus={!!(template && !isEdit)}
+              />
             </div>
             <div className="mt-1">
               <input className="input text-xs" value={form.api_key_header} onChange={e => set('api_key_header', e.target.value)} placeholder="Authorization" />
@@ -431,6 +477,61 @@ function TestPanel({ tool, onClose }: TestPanelProps) {
   )
 }
 
+// ── Prebuilt tool card ────────────────────────────────────────────────────────
+
+interface PrebuiltCardProps {
+  template: ToolTemplate
+  isActive: boolean      // true if a tool with this name already exists
+  onAdd: () => void
+}
+
+function PrebuiltCard({ template, isActive, onAdd }: PrebuiltCardProps) {
+  return (
+    <div className={`relative bg-white dark:bg-gray-900 rounded-xl border p-4 flex flex-col gap-3 transition-shadow hover:shadow-md
+      ${isActive
+        ? 'border-emerald-300 dark:border-emerald-700'
+        : 'border-dashed border-gray-300 dark:border-gray-600'}`}
+    >
+      {/* active badge */}
+      {isActive && (
+        <span className="absolute top-3 right-3 flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 rounded-full">
+          <CheckCircle size={11} /> Active
+        </span>
+      )}
+
+      <div className="flex items-center gap-2 pr-16">
+        <span className="p-1.5 rounded-lg bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400">
+          <Sparkles size={15} />
+        </span>
+        <div>
+          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{template.name}</p>
+          <p className="text-xs text-gray-400">Prebuilt</p>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{template.description}</p>
+
+      <p className="text-xs font-mono text-gray-500 dark:text-gray-400 truncate bg-gray-50 dark:bg-gray-800 rounded px-2 py-1">
+        {template.url}
+      </p>
+
+      {!isActive && (
+        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+          <KeyRound size={12} />
+          <span>API key required to use</span>
+        </div>
+      )}
+
+      <button
+        className={isActive ? 'btn-secondary text-xs py-1.5' : 'btn-primary text-xs py-1.5'}
+        onClick={onAdd}
+      >
+        {isActive ? 'Add another / reconfigure' : 'Add & configure →'}
+      </button>
+    </div>
+  )
+}
+
 // ── Tool card ─────────────────────────────────────────────────────────────────
 
 interface CardProps {
@@ -483,13 +584,17 @@ function ToolCard({ tool, onEdit, onDelete, onTest }: CardProps) {
 
 export default function Tools() {
   const [tools, setTools] = useState<Tool[]>([])
+  const [templates, setTemplates] = useState<ToolTemplate[]>([])
   const [loading, setLoading] = useState(true)
   const [modalTool, setModalTool] = useState<Tool | null | undefined>(undefined)
+  const [modalTemplate, setModalTemplate] = useState<ToolTemplate | null>(null)
   const [testTool_, setTestTool] = useState<Tool | null>(null)
 
   const load = async () => {
     try {
-      setTools(await listTools())
+      const [ts, tpls] = await Promise.all([listTools(), listToolTemplates()])
+      setTools(ts)
+      setTemplates(tpls)
     } catch {
       toast.error('Failed to load tools')
     } finally {
@@ -505,6 +610,12 @@ export default function Tools() {
       return idx >= 0 ? prev.map(t => t.id === tool.id ? tool : t) : [tool, ...prev]
     })
     setModalTool(undefined)
+    setModalTemplate(null)
+  }
+
+  const openTemplate = (tpl: ToolTemplate) => {
+    setModalTool(null)        // create mode
+    setModalTemplate(tpl)
   }
 
   const handleDelete = async (id: string) => {
@@ -539,7 +650,34 @@ export default function Tools() {
         </button>
       </div>
 
-      {/* grid */}
+      {/* ── Prebuilt integrations ─────────────────────────────────────── */}
+      {templates.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-1.5">
+            <Sparkles size={14} className="text-primary-500" />
+            Prebuilt Integrations
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {templates.map(tpl => (
+              <PrebuiltCard
+                key={tpl.slug}
+                template={tpl}
+                isActive={tools.some(t => t.name === tpl.name)}
+                onAdd={() => openTemplate(tpl)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Custom tools grid ────────────────────────────────────────── */}
+      {tools.length > 0 && (
+        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
+          <Wrench size={14} className="text-gray-400" />
+          Your Tools
+        </h2>
+      )}
+
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(3)].map((_, i) => (
@@ -547,13 +685,13 @@ export default function Tools() {
           ))}
         </div>
       ) : tools.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <Wrench size={40} className="text-gray-300 dark:text-gray-600 mb-3" />
-          <p className="text-gray-500 dark:text-gray-400 font-medium">No tools yet</p>
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <Wrench size={36} className="text-gray-300 dark:text-gray-600 mb-3" />
+          <p className="text-gray-500 dark:text-gray-400 font-medium">No custom tools yet</p>
           <p className="text-sm text-gray-400 dark:text-gray-500 mt-1 mb-4">
-            Create your first tool to call external APIs from your agents.
+            Add a prebuilt integration above, or create a custom HTTP tool.
           </p>
-          <button className="btn-primary flex items-center gap-2" onClick={() => setModalTool(null)}>
+          <button className="btn-primary flex items-center gap-2" onClick={() => { setModalTemplate(null); setModalTool(null) }}>
             <Plus size={14} /> Create Tool
           </button>
         </div>
@@ -563,7 +701,7 @@ export default function Tools() {
             <ToolCard
               key={tool.id}
               tool={tool}
-              onEdit={() => setModalTool(tool)}
+              onEdit={() => { setModalTemplate(null); setModalTool(tool) }}
               onDelete={() => handleDelete(tool.id)}
               onTest={() => setTestTool(tool)}
             />
@@ -575,7 +713,8 @@ export default function Tools() {
       {showModal && (
         <ToolModal
           initial={modalTool}
-          onClose={() => setModalTool(undefined)}
+          template={modalTemplate}
+          onClose={() => { setModalTool(undefined); setModalTemplate(null) }}
           onSaved={handleSaved}
         />
       )}

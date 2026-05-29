@@ -2,23 +2,30 @@ import axios from 'axios'
 import type {
   Agent, AgentCreate, BotCreate, BotUpdate, ChannelBot, ExecutionRecord,
   IntegrationCreate, IntegrationUpdate, ScheduleCreate, ScheduleUpdate, SlackChannelMapping,
-  SlackMappingCreate, StatsResponse, TelegramMapping, Tool, ToolCreate, ToolTestRequest,
-  ToolTestResponse, ToolUpdate, Workflow, WorkflowCreate, WorkflowDefinition,
+  SlackMappingCreate, StatsResponse, TelegramMapping, Tool, ToolCreate, ToolTemplate,
+  ToolTestRequest, ToolTestResponse, ToolUpdate, Workflow, WorkflowCreate, WorkflowDefinition,
   WorkflowExecuteResponse, WorkflowIntegration, WorkflowSchedule,
 } from './types'
 
 export type { Agent, AgentCreate, BotCreate, BotUpdate, ChannelBot, ExecutionRecord,
   IntegrationCreate, IntegrationUpdate, ScheduleCreate, ScheduleUpdate, SlackChannelMapping,
-  SlackMappingCreate, StatsResponse, TelegramMapping, Tool, ToolCreate, ToolTestRequest,
-  ToolTestResponse, ToolUpdate, Workflow, WorkflowCreate, WorkflowDefinition,
+  SlackMappingCreate, StatsResponse, TelegramMapping, Tool, ToolCreate, ToolTemplate,
+  ToolTestRequest, ToolTestResponse, ToolUpdate, Workflow, WorkflowCreate, WorkflowDefinition,
   WorkflowExecuteResponse, WorkflowIntegration, WorkflowSchedule }
 
 export const api = axios.create({ baseURL: '' })
+
+// Attach API key when configured (set VITE_API_KEY in .env)
+const _apiKey = import.meta.env.VITE_API_KEY as string | undefined
+if (_apiKey) {
+  api.defaults.headers.common['Authorization'] = `Bearer ${_apiKey}`
+}
 
 // ── Agents ────────────────────────────────────────────────────────────────────
 export const listAgents    = () => api.get<Agent[]>('/agents').then(r => r.data)
 export const getAgent      = (id: string) => api.get<Agent>(`/agents/${id}`).then(r => r.data)
 export const createAgent   = (data: AgentCreate) => api.post<Agent>('/agents', data).then(r => r.data)
+export const updateAgent   = (id: string, data: Partial<AgentCreate>) => api.put<Agent>(`/agents/${id}`, data).then(r => r.data)
 export const deleteAgent   = (id: string) => api.delete(`/agents/${id}`)
 export const executeAgent  = (id: string, task: string) =>
   api.post(`/agents/${id}/execute`, { task }).then(r => r.data)
@@ -51,14 +58,20 @@ export const createMapping  = (data: TelegramMapping) =>
 export const deleteMapping  = (chatId: string) => api.delete(`/telegram/mappings/${chatId}`)
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
-export const listTools    = () => api.get<Tool[]>('/tools').then(r => r.data)
-export const getTool      = (id: string) => api.get<Tool>(`/tools/${id}`).then(r => r.data)
-export const createTool   = (data: ToolCreate) => api.post<Tool>('/tools', data).then(r => r.data)
-export const updateTool   = (id: string, data: ToolUpdate) =>
+export const listTools         = () => api.get<Tool[]>('/tools').then(r => r.data)
+export const getTool           = (id: string) => api.get<Tool>(`/tools/${id}`).then(r => r.data)
+export const createTool        = (data: ToolCreate) => api.post<Tool>('/tools', data).then(r => r.data)
+export const updateTool        = (id: string, data: ToolUpdate) =>
   api.put<Tool>(`/tools/${id}`, data).then(r => r.data)
-export const deleteTool   = (id: string) => api.delete(`/tools/${id}`)
-export const testTool     = (id: string, data: ToolTestRequest) =>
+export const deleteTool        = (id: string) => api.delete(`/tools/${id}`)
+export const testTool          = (id: string, data: ToolTestRequest) =>
   api.post<ToolTestResponse>(`/tools/${id}/test`, data).then(r => r.data)
+export const listToolTemplates = () =>
+  api.get<ToolTemplate[]>('/tools/templates').then(r => r.data)
+
+// ── Seed ──────────────────────────────────────────────────────────────────────
+export const seedDemo = () =>
+  api.post<{ seeded: boolean; reason?: string }>('/seed').then(r => r.data)
 
 // ── Schedules ─────────────────────────────────────────────────────────────────
 export const listSchedules   = (workflowId: string) =>

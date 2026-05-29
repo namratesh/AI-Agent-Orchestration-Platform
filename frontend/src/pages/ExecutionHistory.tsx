@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { CheckCircle, XCircle, Clock, Zap, DollarSign, Trash2, ChevronDown, ChevronUp, Download, RefreshCw, Bot, Wrench, GitBranch } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { CheckCircle, XCircle, Clock, Zap, DollarSign, Trash2, ChevronDown, ChevronUp, Download, RefreshCw, Bot, Wrench, Loader2, GitBranch } from 'lucide-react'
 import { deleteExecution, listExecutions } from '../api'
 import type { ExecutionRecord } from '../types'
 import { PageSpinner } from '../components/LoadingSpinner'
@@ -17,6 +18,9 @@ function fmtDate(ts: string) {
 }
 
 export default function ExecutionHistory() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const workflowFilter = searchParams.get('workflow')
+
   const [rows, setRows]         = useState<ExecutionRecord[]>([])
   const [loading, setLoading]   = useState(true)
   const [sortKey, setSortKey]   = useState<SortKey>('created_at')
@@ -26,14 +30,42 @@ export default function ExecutionHistory() {
   const [page, setPage]         = useState(0)
   const PAGE_SIZE = 25
 
-  const load = () => {
-    setLoading(true)
+  const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null)
+  const warmPollRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const load = (silent = false) => {
+    if (!silent) setLoading(true)
     listExecutions(200, 0)
-      .then(setRows)
-      .catch(() => toast.error('Failed to load history'))
-      .finally(() => setLoading(false))
+      .then(data => {
+        setRows(data)
+        // Keep polling as long as any execution is in-flight
+        const hasPending = data.some(r => r.status === 'queued' || r.status === 'running')
+        if (hasPending && !pollRef.current) {
+          pollRef.current = setInterval(() => load(true), 2000)
+        } else if (!hasPending && pollRef.current) {
+          clearInterval(pollRef.current)
+          pollRef.current = null
+        }
+      })
+      .catch(() => { if (!silent) toast.error('Failed to load history') })
+      .finally(() => { if (!silent) setLoading(false) })
   }
-  useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    load()
+    // "Warm poll" — always refresh every 2 s for the first 20 s after page load so
+    // executions triggered just before navigating here appear immediately without
+    // the user having to click Refresh.
+    warmPollRef.current = setInterval(() => load(true), 2000)
+    const warmStop = setTimeout(() => {
+      if (warmPollRef.current) { clearInterval(warmPollRef.current); warmPollRef.current = null }
+    }, 20_000)
+    return () => {
+      if (pollRef.current)     clearInterval(pollRef.current)
+      if (warmPollRef.current) clearInterval(warmPollRef.current)
+      clearTimeout(warmStop)
+    }
+  }, [])
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this execution record?')) return
@@ -55,6 +87,7 @@ export default function ExecutionHistory() {
 
   const filtered = rows
     .filter(r => statusFilter === 'all' || r.status === statusFilter)
+    .filter(r => !workflowFilter || r.workflow_id === workflowFilter)
     .sort((a, b) => {
       const dir = sortDir === 'asc' ? 1 : -1
       if (sortKey === 'created_at') return dir * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
@@ -84,7 +117,7 @@ export default function ExecutionHistory() {
           <p className="page-subtitle">{filtered.length} record{filtered.length !== 1 ? 's' : ''}</p>
         </div>
         <div className="flex items-center gap-2">
-          <button className="btn-ghost text-sm py-1.5 px-3" onClick={load}>
+          <button className="btn-ghost text-sm py-1.5 px-3" onClick={() => load()}>
             <RefreshCw size={14} />Refresh
           </button>
           <button className="btn-secondary text-sm" onClick={exportCSV} disabled={filtered.length === 0}>
@@ -92,6 +125,15 @@ export default function ExecutionHistory() {
           </button>
         </div>
       </div>
+
+      {/* Workflow filter badge */}
+      {workflowFilter && (
+        <div className="flex items-center gap-2 text-sm bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl px-3 py-2">
+          <GitBranch size={13} className="text-indigo-500 shrink-0" />
+          <span className="text-indigo-700 dark:text-indigo-300 text-xs">Showing runs for workflow <span className="font-mono font-bold">{workflowFilter.slice(0, 8)}…</span></span>
+          <button onClick={() => setSearchParams({})} className="ml-auto text-indigo-400 hover:text-indigo-600 transition-colors"><XCircle size={13} /></button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex gap-2">
@@ -145,7 +187,11 @@ export default function ExecutionHistory() {
                       <td className="px-4 py-3">
                         {r.status === 'success'
                           ? <span className="badge-green"><CheckCircle size={11} />Success</span>
-                          : <span className="badge-red"><XCircle size={11} />Error</span>
+                          : r.status === 'error'
+                            ? <span className="badge-red"><XCircle size={11} />Error</span>
+                            : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">
+                                <Loader2 size={11} className="animate-spin" />{r.status === 'queued' ? 'Queued' : 'Running'}
+                              </span>
                         }
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600 dark:text-gray-300 tabular-nums"><Clock size={11} className="inline mr-1 text-gray-400" />{fmtDur(r.execution_time_seconds)}</td>
@@ -178,72 +224,100 @@ export default function ExecutionHistory() {
         </>
       )}
 
-      {/* Detail modal */}
+      {/* Detail modal — d is always the freshest row data (auto-updates while polling) */}
       <Modal open={!!detail} onClose={() => setDetail(null)} title="Execution Detail" size="lg">
-        {detail && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[
-                { label: 'Status',   value: detail.status, badge: true },
-                { label: 'Duration', value: fmtDur(detail.execution_time_seconds) },
-                { label: 'Tokens',   value: detail.tokens_used.toLocaleString() },
-                { label: 'Cost',     value: fmtCost(detail.cost) },
-              ].map(m => (
-                <div key={m.label} className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 text-center">
-                  <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">{m.label}</p>
-                  {m.badge
-                    ? (detail.status === 'success' ? <span className="badge-green"><CheckCircle size={11} />Success</span> : <span className="badge-red"><XCircle size={11} />Error</span>)
-                    : <p className="font-bold text-gray-900 dark:text-white">{m.value}</p>
-                  }
-                </div>
-              ))}
-            </div>
-            <div>
-              <p className="label">Task</p>
-              <p className="text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">{detail.task}</p>
-            </div>
-
-            {/* Inter-agent message trace */}
-            {detail.node_outputs && Object.keys(detail.node_outputs).length > 0 && (
+        {detail && (() => {
+          const d = rows.find(r => r.id === detail.id) ?? detail
+          const isPending = d.status === 'queued' || d.status === 'running'
+          return (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { label: 'Status',   value: d.status, badge: true },
+                  { label: 'Duration', value: fmtDur(d.execution_time_seconds) },
+                  { label: 'Tokens',   value: d.tokens_used.toLocaleString() },
+                  { label: 'Cost',     value: fmtCost(d.cost) },
+                ].map(m => (
+                  <div key={m.label} className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 text-center">
+                    <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">{m.label}</p>
+                    {m.badge
+                      ? d.status === 'success'
+                        ? <span className="badge-green"><CheckCircle size={11} />Success</span>
+                        : d.status === 'error'
+                          ? <span className="badge-red"><XCircle size={11} />Error</span>
+                          : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">
+                              <Loader2 size={11} className="animate-spin" />{d.status === 'queued' ? 'Queued' : 'Running'}
+                            </span>
+                      : <p className="font-bold text-gray-900 dark:text-white">{m.value}</p>
+                    }
+                  </div>
+                ))}
+              </div>
               <div>
-                <p className="label">Message Trace <span className="font-normal text-gray-400">(inter-agent outputs)</span></p>
-                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                  {Object.entries(detail.node_outputs).map(([nodeId, output], idx) => {
-                    const isTool  = nodeId.startsWith('tool')
-                    const Icon    = isTool ? Wrench : Bot
-                    const color   = isTool ? 'text-emerald-500' : 'text-indigo-500'
-                    const bg      = isTool ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800' : 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800'
-                    const truncated = output.length > 300
-                    return (
-                      <div key={nodeId} className={`rounded-lg border p-3 ${bg}`}>
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className="text-[10px] font-bold text-gray-400">Step {idx + 1}</span>
-                          <Icon size={11} className={color} />
-                          <span className={`text-[10px] font-semibold font-mono ${color}`}>{nodeId}</span>
+                <p className="label">Task</p>
+                <p className="text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">{d.task}</p>
+              </div>
+
+              {isPending && (
+                <div className="flex items-center gap-2 text-sm text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg px-3 py-2 border border-yellow-200 dark:border-yellow-800">
+                  <Loader2 size={14} className="animate-spin shrink-0" />
+                  Execution is in progress — this panel updates automatically.
+                </div>
+              )}
+
+              {/* Inter-agent message trace */}
+              {d.node_outputs && Object.keys(d.node_outputs).length > 0 && (
+                <div>
+                  <p className="label">Message Trace <span className="font-normal text-gray-400">(inter-agent outputs)</span></p>
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                    {Object.entries(d.node_outputs).map(([nodeId, output], idx) => {
+                      const isTool  = nodeId.startsWith('tool')
+                      const Icon    = isTool ? Wrench : Bot
+                      const color   = isTool ? 'text-emerald-500' : 'text-indigo-500'
+                      const bg      = isTool ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800' : 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800'
+                      const truncated = (output as string).length > 300
+                      return (
+                        <div key={nodeId} className={`rounded-lg border p-3 ${bg}`}>
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className="text-[10px] font-bold text-gray-400">Step {idx + 1}</span>
+                            <Icon size={11} className={color} />
+                            <span className={`text-[10px] font-semibold font-mono ${color}`}>{nodeId}</span>
+                          </div>
+                          <p className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                            {truncated ? (output as string).slice(0, 300) + '…' : output as string}
+                          </p>
                         </div>
-                        <p className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-                          {truncated ? output.slice(0, 300) + '…' : output}
-                        </p>
-                      </div>
-                    )
-                  })}
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {d.status === 'error' && d.error_message && (
+                <div>
+                  <p className="label">Error Details</p>
+                  <div className="bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-700 p-4 max-h-48 overflow-y-auto">
+                    <p className="text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap font-mono">{d.error_message}</p>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <p className="label">Final Result</p>
+                <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-200 dark:border-gray-700 p-4 max-h-48 overflow-y-auto">
+                  <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
+                    {d.result || <span className="text-gray-400 italic">{isPending ? 'Waiting for result…' : 'No output'}</span>}
+                  </p>
                 </div>
               </div>
-            )}
-
-            <div>
-              <p className="label">Final Result</p>
-              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-200 dark:border-gray-700 p-4 max-h-48 overflow-y-auto">
-                <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{detail.result}</p>
+              <div className="text-xs text-gray-400 dark:text-gray-500 space-y-1">
+                <p><span className="font-medium">ID:</span> <span className="font-mono">{d.id}</span></p>
+                <p><span className="font-medium">Time:</span> {new Date(d.created_at).toLocaleString()}</p>
+                <p><span className="font-medium">Source:</span> {d.source}</p>
               </div>
             </div>
-            <div className="text-xs text-gray-400 dark:text-gray-500 space-y-1">
-              <p><span className="font-medium">ID:</span> <span className="font-mono">{detail.id}</span></p>
-              <p><span className="font-medium">Time:</span> {new Date(detail.created_at).toLocaleString()}</p>
-              <p><span className="font-medium">Source:</span> {detail.source}</p>
-            </div>
-          </div>
-        )}
+          )
+        })()}
       </Modal>
     </div>
   )

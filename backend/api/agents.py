@@ -3,11 +3,13 @@ from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
+
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
-from db.db import create_agent, delete_agent, get_agent, get_db, list_agents
-from schemas.models import Agent, AgentCreate, ExecuteRequest, ExecuteResponse
+from db.db import create_agent, delete_agent, get_agent, get_db, list_agents, update_agent
+from schemas.models import Agent, AgentCreate, AgentUpdate, ExecuteRequest, ExecuteResponse
 from services.executor import agent_executor
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -16,9 +18,13 @@ logger = get_logger(__name__)
 
 @router.post("", response_model=Agent, status_code=201)
 def create_agent_endpoint(payload: AgentCreate, db: Session = Depends(get_db)):
-    row = create_agent(db, name=payload.name, role=payload.role,
-                       system_prompt=payload.system_prompt, model=payload.model,
-                       provider=payload.provider, tools=payload.tools, config=payload.config)
+    try:
+        row = create_agent(db, name=payload.name, role=payload.role,
+                           system_prompt=payload.system_prompt, model=payload.model,
+                           provider=payload.provider, tools=payload.tools, config=payload.config)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"An agent named '{payload.name}' already exists.")
     logger.info("agent_created", agent_id=str(row.id), name=row.name, provider=row.provider)
     return Agent.model_validate(row)
 
@@ -33,6 +39,21 @@ def get_agent_endpoint(agent_id: UUID, db: Session = Depends(get_db)):
     row = get_agent(db, agent_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    return Agent.model_validate(row)
+
+
+@router.put("/{agent_id}", response_model=Agent)
+def update_agent_endpoint(agent_id: UUID, payload: AgentUpdate, db: Session = Depends(get_db)):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    try:
+        row = update_agent(db, agent_id, **updates)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409,
+                            detail=f"An agent named '{updates.get('name')}' already exists.")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    logger.info("agent_updated", agent_id=str(agent_id))
     return Agent.model_validate(row)
 
 

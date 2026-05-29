@@ -51,6 +51,27 @@ services:
     volumes:
       - ./backend:/app
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: worker
+    command: rq worker executions --url redis://redis:6379
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agent_db
+      REDIS_URL: redis://redis:6379
+      JAEGER_HOST: jaeger
+      PYTHONPATH: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
   frontend:
     build:
       context: ./frontend

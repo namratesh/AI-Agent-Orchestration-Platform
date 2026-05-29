@@ -1,4 +1,4 @@
-import { Trash2, Bot, Zap } from 'lucide-react'
+import { Trash2, Bot, Zap, Pencil } from 'lucide-react'
 import type { Agent } from '../types'
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -11,11 +11,19 @@ const PROVIDER_COLORS: Record<string, string> = {
 interface Props {
   agent: Agent
   onDelete: (id: string) => void
+  onEdit?: (agent: Agent) => void
   selected?: boolean
   onClick?: () => void
 }
 
-export default function AgentCard({ agent, onDelete, selected, onClick }: Props) {
+function promptSnippet(prompt: string): string {
+  const cleaned = prompt.replace(/\s+/g, ' ').trim()
+  return cleaned.length > 90 ? cleaned.slice(0, 87) + '…' : cleaned
+}
+
+export default function AgentCard({ agent, onDelete, onEdit, selected, onClick }: Props) {
+  const snippet = agent.system_prompt ? promptSnippet(agent.system_prompt) : ''
+
   return (
     <div
       onClick={onClick}
@@ -28,15 +36,28 @@ export default function AgentCard({ agent, onDelete, selected, onClick }: Props)
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <h3 className="font-semibold text-sm text-gray-900 dark:text-white truncate">{agent.name}</h3>
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(agent.id) }}
-              className="opacity-0 group-hover:opacity-100 p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
-              title="Delete agent"
-            >
-              <Trash2 size={14} />
-            </button>
+            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition-all">
+              {onEdit && (
+                <button onClick={(e) => { e.stopPropagation(); onEdit(agent) }}
+                  className="p-1 rounded text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all" title="Edit agent">
+                  <Pencil size={13} />
+                </button>
+              )}
+              <button onClick={(e) => { e.stopPropagation(); onDelete(agent.id) }}
+                className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all" title="Delete agent">
+                <Trash2 size={14} />
+              </button>
+            </div>
           </div>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{agent.role}</p>
+          {snippet && (
+            <p
+              className="mt-1.5 text-xs text-gray-400 dark:text-gray-500 leading-relaxed line-clamp-2 cursor-default"
+              title={agent.system_prompt}
+            >
+              {snippet}
+            </p>
+          )}
           <div className="mt-2 flex flex-wrap gap-1.5">
             <span className={PROVIDER_COLORS[agent.provider] ?? 'badge-gray'}>{agent.provider}</span>
             {agent.tools.map(t => (

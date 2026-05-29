@@ -6,6 +6,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
@@ -21,6 +22,30 @@ logger = get_logger(__name__)
 _VAR_RE = re.compile(r"\{\{(\w+)\}\}")
 _MASKED = "••••••"
 
+# ── Prebuilt tool templates ────────────────────────────────────────────────────
+
+PREBUILT_TEMPLATES = [
+    {
+        "slug": "tavily_search",
+        "name": "Tavily Web Search",
+        "description": (
+            "Real-time web search powered by Tavily AI. "
+            "Returns top results with titles, content snippets, and source URLs. "
+            "Use {{query}} as a placeholder for the search term."
+        ),
+        "method": "POST",
+        "url": "https://api.tavily.com/search",
+        "headers": {"Content-Type": "application/json"},
+        "body_template": '{"query": "{{query}}", "max_results": 5, "search_depth": "basic"}',
+        "api_key": "",
+        "api_key_header": "Authorization",
+        "api_key_prefix": "Bearer",
+        "timeout_seconds": 30,
+        "setup_hint": "Get a free API key at tavily.com — supports 1 000 free searches/month.",
+        "docs_url": "https://docs.tavily.com",
+    },
+]
+
 
 def _substitute(text: str, variables: Dict[str, str]) -> str:
     return _VAR_RE.sub(lambda m: variables.get(m.group(1), m.group(0)), text)
@@ -33,17 +58,27 @@ def _to_schema(row) -> Tool:
     return t
 
 
+@router.get("/templates")
+def list_templates():
+    """Return static prebuilt tool templates. No auth required — purely informational."""
+    return PREBUILT_TEMPLATES
+
+
 @router.post("", response_model=Tool, status_code=201)
 def create_tool_endpoint(payload: ToolCreate, db: Session = Depends(get_db)):
-    row = create_tool(
-        db,
-        name=payload.name, description=payload.description, method=payload.method,
-        url=payload.url, headers=payload.headers, body_template=payload.body_template,
-        api_key=encrypt_api_key(payload.api_key),
-        api_key_header=payload.api_key_header,
-        api_key_prefix=payload.api_key_prefix,
-        timeout_seconds=payload.timeout_seconds,
-    )
+    try:
+        row = create_tool(
+            db,
+            name=payload.name, description=payload.description, method=payload.method,
+            url=payload.url, headers=payload.headers, body_template=payload.body_template,
+            api_key=encrypt_api_key(payload.api_key),
+            api_key_header=payload.api_key_header,
+            api_key_prefix=payload.api_key_prefix,
+            timeout_seconds=payload.timeout_seconds,
+        )
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"A tool named '{payload.name}' already exists.")
     logger.info("tool_created", tool_id=str(row.id), name=row.name)
     return _to_schema(row)
 
@@ -70,7 +105,12 @@ def update_tool_endpoint(tool_id: UUID, payload: ToolUpdate, db: Session = Depen
         raw = updates["api_key"]
         updates["api_key"] = "" if raw == _MASKED else encrypt_api_key(raw)
 
-    row = update_tool(db, tool_id, **updates)
+    try:
+        row = update_tool(db, tool_id, **updates)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409,
+                            detail=f"A tool named '{updates.get('name')}' already exists.")
     if row is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     logger.info("tool_updated", tool_id=str(tool_id))

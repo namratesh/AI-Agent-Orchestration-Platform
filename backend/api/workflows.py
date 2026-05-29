@@ -3,6 +3,7 @@ from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
@@ -10,7 +11,9 @@ from db.db import (create_execution_queued, create_workflow, delete_workflow,
                    get_db, get_workflow, list_checkpoints, list_workflows)
 from schemas.models import (CheckpointResponse, ExecuteRequest, Workflow,
                             WorkflowCreate, WorkflowExecuteResponse)
-from services.workflow_executor import workflow_executor
+from services.queue import QUEUE_AVAILABLE, execution_queue
+from services.tasks import run_workflow
+from services.workflow_executor import validate_workflow_definition, workflow_executor
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 logger = get_logger(__name__)
@@ -29,8 +32,12 @@ def _run_workflow_bg(execution_id: UUID, workflow_id: UUID, task: str,
 
 @router.post("", response_model=Workflow, status_code=201)
 def create_workflow_endpoint(payload: WorkflowCreate, db: Session = Depends(get_db)):
-    row = create_workflow(db, name=payload.name,
-                          definition=payload.definition.model_dump(mode="json"))
+    try:
+        row = create_workflow(db, name=payload.name,
+                              definition=payload.definition.model_dump(mode="json"))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"A workflow named '{payload.name}' already exists.")
     logger.info("workflow_created", workflow_id=str(row.id), name=row.name)
     return Workflow.model_validate(row)
 
@@ -52,8 +59,13 @@ def get_workflow_endpoint(workflow_id: UUID, db: Session = Depends(get_db)):
 def execute_workflow_endpoint(workflow_id: UUID, payload: ExecuteRequest,
                               request: Request, background_tasks: BackgroundTasks,
                               db: Session = Depends(get_db)):
-    if get_workflow(db, workflow_id) is None:
+    workflow_row = get_workflow(db, workflow_id)
+    if workflow_row is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+
+    validation_errors = validate_workflow_definition(db, workflow_row.definition)
+    if validation_errors:
+        raise HTTPException(status_code=422, detail={"errors": validation_errors})
 
     trace_id = request.state.trace_id
     logger.bind(trace_id=trace_id).info("workflow_execute_queued",
@@ -62,9 +74,23 @@ def execute_workflow_endpoint(workflow_id: UUID, payload: ExecuteRequest,
     # Create the execution record immediately (status="queued") so the client
     # can poll GET /executions/{id} for the result.
     exec_row = create_execution_queued(db, workflow_id=workflow_id, task=payload.task)
-    background_tasks.add_task(
-        _run_workflow_bg, exec_row.id, workflow_id, payload.task, trace_id, "ui"
-    )
+
+    if QUEUE_AVAILABLE and execution_queue is not None:
+        execution_queue.enqueue(
+            run_workflow,
+            str(exec_row.id), str(workflow_id), payload.task, trace_id, "ui",
+            job_timeout=600,
+        )
+        dispatch = "rq"
+    else:
+        background_tasks.add_task(
+            _run_workflow_bg, exec_row.id, workflow_id, payload.task, trace_id, "ui"
+        )
+        dispatch = "background_task"
+
+    logger.bind(trace_id=trace_id).info("workflow_dispatched",
+                                        dispatch=dispatch,
+                                        execution_id=str(exec_row.id))
 
     return WorkflowExecuteResponse(
         workflow_id=workflow_id,

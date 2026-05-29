@@ -70,18 +70,31 @@ class LLMFactory:
 def web_search(query: str) -> str:
     span = otel_trace.get_current_span()
     span.set_attribute("tool.name", "web_search")
-    span.set_attribute("query", query[:200])
+
+    # Tavily rejects queries over ~400 chars; trim to the first sentence or 400 chars.
+    trimmed = query.strip()
+    for sep in (".\n", "\n", ". "):
+        idx = trimmed.find(sep)
+        if 0 < idx <= 400:
+            trimmed = trimmed[:idx].strip()
+            break
+    trimmed = trimmed[:400]
+    span.set_attribute("query", trimmed)
 
     from tavily import TavilyClient
     api_key = settings.TAVILY_API_KEY
     if not api_key or api_key.startswith("tvly-..."):
         return "Web search is not configured. Set TAVILY_API_KEY in .env to enable it."
 
-    client = TavilyClient(api_key=api_key)
-    response = client.search(query, max_results=5)
+    try:
+        client = TavilyClient(api_key=api_key)
+        response = client.search(trimmed, max_results=5)
+    except Exception as exc:
+        return f"[Web search error: {exc}]"
+
     results: List[Dict] = response.get("results", [])
     if not results:
-        return f"No results found for: {query}"
+        return f"No results found for: {trimmed}"
 
     lines = [
         f"{i}. {r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
