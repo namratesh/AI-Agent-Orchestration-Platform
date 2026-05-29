@@ -18,7 +18,7 @@ from opentelemetry import trace as otel_trace
 
 from core.logging_config import get_logger
 from db.db import (SessionLocal, get_agent, get_tool, get_workflow,
-                   save_checkpoint, save_execution, update_execution)
+                   patch_execution_progress, save_checkpoint, save_execution, update_execution)
 from instrumentation import record_workflow_execution
 from services.executor import agent_executor
 
@@ -53,26 +53,24 @@ def _eval_condition(condition: Optional[dict], text: str) -> bool:
 
 # ── Node factories ────────────────────────────────────────────────────────────
 
-def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str, workflow_id: UUID):
-    """
-    Returns a LangGraph node function that runs an agent.
-    The node reads current_output as its task and writes the agent's
-    response back to current_output so the next node picks it up.
-    """
+def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str,
+                     workflow_id: UUID, execution_id: Optional[UUID]):
     def _run(state: WorkflowState) -> dict:
         log = logger.bind(trace_id=trace_id, node_id=node_id, agent_id=str(agent_id))
         log.info("agent_node_executing", input_preview=state["current_output"][:120])
 
         outcome = agent_executor.execute(agent_id, state["current_output"], trace_id)
+        new_outputs = {**state["node_outputs"], node_id: outcome["result"]}
 
-        # Persist a checkpoint for this node
         db = SessionLocal()
         try:
             save_checkpoint(db, workflow_id=workflow_id, node_id=node_id,
-                            state={"input":        state["current_output"],
-                                   "output":       outcome["result"],
-                                   "tokens_used":  outcome["tokens_used"],
-                                   "cost":         outcome["cost"]})
+                            state={"input":       state["current_output"],
+                                   "output":      outcome["result"],
+                                   "tokens_used": outcome["tokens_used"],
+                                   "cost":        outcome["cost"]})
+            if execution_id:
+                patch_execution_progress(db, execution_id, {node_id: outcome["result"]})
         finally:
             db.close()
 
@@ -81,7 +79,7 @@ def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str, workflow_id: U
 
         return {
             "current_output": outcome["result"],
-            "node_outputs":   {**state["node_outputs"], node_id: outcome["result"]},
+            "node_outputs":   new_outputs,
             "tokens_used":    state["tokens_used"] + outcome["tokens_used"],
             "cost":           state["cost"] + outcome["cost"],
         }
@@ -90,12 +88,7 @@ def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str, workflow_id: U
     return _run
 
 
-def _make_tool_node(node_id: str, tool, trace_id: str):
-    """
-    Returns a LangGraph node function that executes an HTTP tool.
-    The tool's response becomes current_output for the next node.
-    {{input}} in the body template is replaced with current_output.
-    """
+def _make_tool_node(node_id: str, tool, trace_id: str, execution_id: Optional[UUID]):
     def _run(state: WorkflowState) -> dict:
         log = logger.bind(trace_id=trace_id, node_id=node_id, tool=tool.name)
         log.info("tool_node_executing", method=tool.method, url=tool.url)
@@ -107,9 +100,7 @@ def _make_tool_node(node_id: str, tool, trace_id: str):
 
         try:
             resp = http_requests.request(
-                method=tool.method,
-                url=tool.url,
-                headers=headers,
+                method=tool.method, url=tool.url, headers=headers,
                 data=body if tool.method not in ("GET", "DELETE") else None,
                 timeout=tool.timeout_seconds or 30,
             )
@@ -118,6 +109,13 @@ def _make_tool_node(node_id: str, tool, trace_id: str):
         except Exception as exc:
             result = f"[Tool error: {exc}]"
             log.warning("tool_node_error", error=str(exc))
+
+        if execution_id:
+            db = SessionLocal()
+            try:
+                patch_execution_progress(db, execution_id, {node_id: result})
+            finally:
+                db.close()
 
         return {
             "current_output": result,
@@ -136,7 +134,8 @@ def _passthrough(_state: WorkflowState) -> dict:
 # ── Dynamic graph builder ─────────────────────────────────────────────────────
 
 def _build_langgraph(definition: dict, trace_id: str,
-                     workflow_id: UUID, db) -> Any:
+                     workflow_id: UUID, db,
+                     execution_id: Optional[UUID] = None) -> Any:
     """
     Converts a workflow definition (nodes + edges from the canvas) into a
     compiled LangGraph StateGraph.
@@ -166,12 +165,12 @@ def _build_langgraph(definition: dict, trace_id: str,
 
         if ntype == "AGENT" and ndf.get("agent_id"):
             fn = _make_agent_node(
-                nid, UUID(str(ndf["agent_id"])), trace_id, workflow_id
+                nid, UUID(str(ndf["agent_id"])), trace_id, workflow_id, execution_id
             )
 
         elif ntype == "TOOL" and ndf.get("tool_id"):
             tool_row = get_tool(db, UUID(str(ndf["tool_id"])))
-            fn = _make_tool_node(nid, tool_row, trace_id) if tool_row else _passthrough
+            fn = _make_tool_node(nid, tool_row, trace_id, execution_id) if tool_row else _passthrough
 
         else:
             fn = _passthrough
@@ -297,7 +296,7 @@ class WorkflowExecutor:
                      edges=len(defn["edges"]))
 
             # Build and compile the LangGraph for this workflow
-            compiled = _build_langgraph(defn, trace_id, workflow_id, db)
+            compiled = _build_langgraph(defn, trace_id, workflow_id, db, existing_execution_id)
 
             initial_state: WorkflowState = {
                 "task":           task,

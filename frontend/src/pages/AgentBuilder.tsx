@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Plus, Search, Bot, ChevronDown, ChevronUp, Settings2, Sparkles, Wrench, GitBranch } from 'lucide-react'
-import { createAgent, deleteAgent, listAgents, seedDemo } from '../api'
+import { Plus, Search, Bot, ChevronDown, ChevronUp, Settings2, Sparkles, Wrench, GitBranch, Pencil } from 'lucide-react'
+import { createAgent, updateAgent, deleteAgent, listAgents, seedDemo } from '../api'
 import type { Agent, AgentCreate, AgentConfig } from '../types'
 import AgentCard from '../components/AgentCard'
 import Modal from '../components/Modal'
@@ -123,11 +123,28 @@ export default function AgentBuilder() {
   const [agents, setAgents]         = useState<Agent[]>([])
   const [loading, setLoading]       = useState(true)
   const [showModal, setShowModal]   = useState(false)
+  const [editAgent, setEditAgent]   = useState<Agent | null>(null)
   const [form, setForm]             = useState<AgentCreate>(blank)
   const [submitting, setSubmitting] = useState(false)
   const [search, setSearch]         = useState('')
   const [templateOpen, setTemplateOpen]   = useState(false)
   const [advancedOpen, setAdvancedOpen]   = useState(false)
+
+  const openEdit = (agent: Agent) => {
+    setEditAgent(agent)
+    setForm({ name: agent.name, role: agent.role, system_prompt: agent.system_prompt,
+               model: agent.model, provider: agent.provider, tools: agent.tools,
+               config: agent.config as Record<string, unknown> })
+    setAdvancedOpen(false)
+    setShowModal(true)
+  }
+
+  const openCreate = () => {
+    setEditAgent(null)
+    setForm(blank)
+    setAdvancedOpen(false)
+    setShowModal(true)
+  }
 
   const load = () => listAgents().then(setAgents).catch(() => toast.error('Failed to load agents')).finally(() => setLoading(false))
   useEffect(() => { load() }, [])
@@ -142,15 +159,18 @@ export default function AgentBuilder() {
     if (!form.name.trim() || !form.role.trim()) { toast.error('Name and role are required'); return }
     setSubmitting(true)
     try {
-      await createAgent(form)
-      toast.success(`Agent "${form.name}" created!`)
-      setForm(blank)
-      setShowModal(false)
-      setAdvancedOpen(false)
+      if (editAgent) {
+        await updateAgent(editAgent.id, form)
+        toast.success(`Agent "${form.name}" updated!`)
+      } else {
+        await createAgent(form)
+        toast.success(`Agent "${form.name}" created!`)
+      }
+      setForm(blank); setShowModal(false); setAdvancedOpen(false); setEditAgent(null)
       load()
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(detail ?? 'Failed to create agent')
+      toast.error(detail ?? (editAgent ? 'Failed to update agent' : 'Failed to create agent'))
     } finally {
       setSubmitting(false)
     }
@@ -185,7 +205,7 @@ export default function AgentBuilder() {
           <h1 className="page-title">Agents</h1>
           <p className="page-subtitle">{agents.length} agent{agents.length !== 1 ? 's' : ''} configured</p>
         </div>
-        <button className="btn-primary" onClick={() => { setForm(blank); setAdvancedOpen(false); setShowModal(true) }}>
+        <button className="btn-primary" onClick={openCreate}>
           <Plus size={16} />New Agent
         </button>
       </div>
@@ -209,22 +229,22 @@ export default function AgentBuilder() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(a => (
-            <AgentCard key={a.id} agent={a} onDelete={handleDelete} />
+            <AgentCard key={a.id} agent={a} onDelete={handleDelete} onEdit={openEdit} />
           ))}
         </div>
       )}
 
-      {/* Create modal */}
+      {/* Create / Edit modal */}
       <Modal
         open={showModal}
-        onClose={() => setShowModal(false)}
-        title="Create Agent"
+        onClose={() => { setShowModal(false); setEditAgent(null) }}
+        title={editAgent ? `Edit — ${editAgent.name}` : 'Create Agent'}
         size="md"
         footer={
           <>
-            <button className="btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
+            <button className="btn-secondary" onClick={() => { setShowModal(false); setEditAgent(null) }}>Cancel</button>
             <button className="btn-primary" onClick={handleSubmit} disabled={submitting}>
-              {submitting ? 'Creating…' : 'Create Agent'}
+              {submitting ? (editAgent ? 'Saving…' : 'Creating…') : (editAgent ? 'Save Changes' : 'Create Agent')}
             </button>
           </>
         }

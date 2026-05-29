@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle, XCircle, Clock, Zap, DollarSign, Trash2, ChevronDown, ChevronUp, Download, RefreshCw, Bot, Wrench, Loader2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { CheckCircle, XCircle, Clock, Zap, DollarSign, Trash2, ChevronDown, ChevronUp, Download, RefreshCw, Bot, Wrench, Loader2, GitBranch } from 'lucide-react'
 import { deleteExecution, listExecutions } from '../api'
 import type { ExecutionRecord } from '../types'
 import { PageSpinner } from '../components/LoadingSpinner'
@@ -17,6 +18,9 @@ function fmtDate(ts: string) {
 }
 
 export default function ExecutionHistory() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const workflowFilter = searchParams.get('workflow')
+
   const [rows, setRows]         = useState<ExecutionRecord[]>([])
   const [loading, setLoading]   = useState(true)
   const [sortKey, setSortKey]   = useState<SortKey>('created_at')
@@ -83,6 +87,7 @@ export default function ExecutionHistory() {
 
   const filtered = rows
     .filter(r => statusFilter === 'all' || r.status === statusFilter)
+    .filter(r => !workflowFilter || r.workflow_id === workflowFilter)
     .sort((a, b) => {
       const dir = sortDir === 'asc' ? 1 : -1
       if (sortKey === 'created_at') return dir * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
@@ -120,6 +125,15 @@ export default function ExecutionHistory() {
           </button>
         </div>
       </div>
+
+      {/* Workflow filter badge */}
+      {workflowFilter && (
+        <div className="flex items-center gap-2 text-sm bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl px-3 py-2">
+          <GitBranch size={13} className="text-indigo-500 shrink-0" />
+          <span className="text-indigo-700 dark:text-indigo-300 text-xs">Showing runs for workflow <span className="font-mono font-bold">{workflowFilter.slice(0, 8)}…</span></span>
+          <button onClick={() => setSearchParams({})} className="ml-auto text-indigo-400 hover:text-indigo-600 transition-colors"><XCircle size={13} /></button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex gap-2">

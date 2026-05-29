@@ -197,6 +197,17 @@ def delete_agent(db: Session, agent_id: UUID) -> bool:
     return True
 
 
+def update_agent(db: Session, agent_id: UUID, **kwargs) -> Optional[AgentORM]:
+    row = db.query(AgentORM).filter(AgentORM.id == agent_id).first()
+    if row is None:
+        return None
+    for key, val in kwargs.items():
+        if hasattr(row, key):
+            setattr(row, key, val)
+    db.commit(); db.refresh(row)
+    return row
+
+
 # ── Workflow ──────────────────────────────────────────────────────────────────
 
 def create_workflow(db: Session, *, name: str, definition: Dict[str, Any]) -> WorkflowORM:
@@ -327,6 +338,17 @@ def create_execution_queued(db: Session, *, workflow_id: Optional[UUID], task: s
                                status="queued", source=source, node_outputs={})
     db.add(row); db.commit(); db.refresh(row)
     return row
+
+
+def patch_execution_progress(db: Session, execution_id: UUID,
+                              node_outputs: Dict[str, Any]) -> None:
+    """Lightweight update: set status=running + merge new node output. No result/cost write."""
+    row = db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.id == execution_id).first()
+    if row is None:
+        return
+    row.status = "running"
+    row.node_outputs = {**(row.node_outputs or {}), **node_outputs}
+    db.commit()
 
 
 def update_execution(db: Session, execution_id: UUID, *, status: str, result: str = "",

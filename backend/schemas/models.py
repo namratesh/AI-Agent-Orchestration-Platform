@@ -34,6 +34,16 @@ class AgentCreate(BaseModel):
     config: AgentConfig = Field(default_factory=dict)
 
 
+class AgentUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    system_prompt: Optional[str] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    tools: Optional[List[str]] = None
+    config: Optional[AgentConfig] = None
+
+
 # ── Workflow ──────────────────────────────────────────────────────────────────
 
 class WorkflowNode(BaseModel):

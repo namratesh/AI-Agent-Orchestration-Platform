@@ -10,7 +10,6 @@ import Sidebar         from './components/Sidebar'
 import Dashboard       from './pages/Dashboard'
 import AgentBuilder    from './pages/AgentBuilder'
 import WorkflowBuilder from './pages/WorkflowBuilder'
-import WorkflowExecutor from './pages/WorkflowExecutor'
 import ExecutionLogs   from './pages/ExecutionLogs'
 import ExecutionHistory from './pages/ExecutionHistory'
 import Settings        from './pages/Settings'
@@ -44,7 +43,7 @@ function Layout() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/agents"    element={<AgentBuilder />} />
               <Route path="/workflows" element={<WorkflowBuilder />} />
-              <Route path="/executor"  element={<WorkflowExecutor />} />
+              <Route path="/executor"  element={<WorkflowBuilder />} />
               <Route path="/logs"      element={<ExecutionLogs />} />
               <Route path="/history"   element={<ExecutionHistory />} />
               <Route path="/tools"     element={<Tools />} />

@@ -25,6 +25,7 @@ if (_apiKey) {
 export const listAgents    = () => api.get<Agent[]>('/agents').then(r => r.data)
 export const getAgent      = (id: string) => api.get<Agent>(`/agents/${id}`).then(r => r.data)
 export const createAgent   = (data: AgentCreate) => api.post<Agent>('/agents', data).then(r => r.data)
+export const updateAgent   = (id: string, data: Partial<AgentCreate>) => api.put<Agent>(`/agents/${id}`, data).then(r => r.data)
 export const deleteAgent   = (id: string) => api.delete(`/agents/${id}`)
 export const executeAgent  = (id: string, task: string) =>
   api.post(`/agents/${id}/execute`, { task }).then(r => r.data)
