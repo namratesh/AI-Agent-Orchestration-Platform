@@ -296,3 +296,57 @@ class IntegrationCreate(BaseModel):
 class IntegrationUpdate(BaseModel):
     config: Optional[Dict[str, Any]] = None
     enabled: Optional[bool] = None
+
+
+# ── Named channel bots ────────────────────────────────────────────────────────
+
+class ChannelBot(BaseModel):
+    id: UUID
+    name: str
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BotCreate(BaseModel):
+    name: str
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+    def validate_config(self) -> None:
+        if self.channel_type == "telegram":
+            if not self.config.get("bot_token"):
+                raise ValueError("Telegram bot requires bot_token")
+        elif self.channel_type == "slack":
+            missing = [f for f in ("bot_token", "signing_secret")
+                       if not self.config.get(f)]
+            if missing:
+                raise ValueError(f"Slack bot requires: {', '.join(missing)}")
+        else:
+            raise ValueError(f"Unsupported channel_type: {self.channel_type!r}")
+
+
+class BotUpdate(BaseModel):
+    name: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
+
+
+class SlackChannelMapping(BaseModel):
+    id: UUID
+    bot_id: UUID
+    channel_id: str
+    channel_name: Optional[str] = None
+    workflow_id: UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SlackMappingCreate(BaseModel):
+    channel_id: str
+    workflow_id: UUID
+    channel_name: Optional[str] = None

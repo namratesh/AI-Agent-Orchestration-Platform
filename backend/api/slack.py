@@ -2,11 +2,11 @@
 Slack Events API receiver.
 
 Flow:
-  1. Slack sends POST /slack/events for every subscribed event.
-  2. We verify the request signature with HMAC-SHA256 + the integration's signing_secret.
-  3. URL verification challenges are answered immediately.
-  4. For user messages we find the matching workflow integration (by channel_id),
-     run the workflow in the background, then reply with chat.postMessage.
+  1. Admin creates a named Slack bot in Settings, enters bot_token + signing_secret.
+  2. Admin registers {host}/slack/events as the Events API URL in their Slack app.
+  3. Admin adds channel → workflow mappings for the bot.
+  4. End users message the Slack channel — Slack POSTs here.
+  5. We verify signature, find the mapping, run the workflow, reply via chat.postMessage.
 """
 from __future__ import annotations
 
@@ -22,10 +22,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
-from db.db import (
-    SessionLocal, find_slack_integration_by_channel, get_db,
-    WorkflowIntegrationORM,
-)
+from db.db import SessionLocal, find_slack_mapping_by_channel, get_bot_by_id, get_db
 from services.workflow_executor import workflow_executor
 
 router = APIRouter(prefix="/slack", tags=["slack"])
@@ -41,7 +38,6 @@ def _verify_signature(body_bytes: bytes, timestamp: str, signature: str,
             return False
     except (ValueError, TypeError):
         return False
-
     sig_base = f"v0:{timestamp}:{body_bytes.decode('utf-8')}"
     expected = "v0=" + hmac.new(
         signing_secret.encode("utf-8"),
@@ -51,7 +47,7 @@ def _verify_signature(body_bytes: bytes, timestamp: str, signature: str,
     return hmac.compare_digest(expected, signature)
 
 
-# ── Background task: run workflow and post result back to Slack ───────────────
+# ── Background: run workflow and reply ────────────────────────────────────────
 
 def _run_and_reply(workflow_id: str, task: str, channel_id: str,
                    bot_token: str, thread_ts: Optional[str]) -> None:
@@ -59,14 +55,11 @@ def _run_and_reply(workflow_id: str, task: str, channel_id: str,
     try:
         outcome = workflow_executor.execute(
             workflow_id=uuid.UUID(workflow_id),
-            task=task,
-            trace_id=trace_id,
-            source="slack",
+            task=task, trace_id=trace_id, source="slack",
         )
         reply = outcome["result"]
     except Exception as exc:
         reply = f"Workflow error: {exc}"
-
     _post_message(bot_token, channel_id, reply, thread_ts)
 
 
@@ -101,16 +94,12 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks,
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # Step 1 — URL verification challenge (Slack sends this when you first set
-    # up the Events API subscription)
+    # URL verification challenge (sent once when you register the Events URL)
     if body.get("type") == "url_verification":
         return {"challenge": body["challenge"]}
 
     event = body.get("event", {})
-    event_type = event.get("type", "")
-
-    # Only handle plain user messages; ignore bot messages to avoid loops
-    if event_type != "message" or event.get("bot_id") or event.get("subtype"):
+    if event.get("type") != "message" or event.get("bot_id") or event.get("subtype"):
         return {"ok": True}
 
     channel_id = event.get("channel", "")
@@ -120,17 +109,21 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks,
     if not channel_id or not text:
         return {"ok": True}
 
-    # Step 2 — Find the integration that owns this channel
-    integration = find_slack_integration_by_channel(db, channel_id)
-    if integration is None:
-        logger.info("slack_event_no_integration", channel_id=channel_id)
+    # Find the Slack channel mapping (joins to enabled channel_bots)
+    mapping = find_slack_mapping_by_channel(db, channel_id)
+    if mapping is None:
+        logger.info("slack_event_no_mapping", channel_id=channel_id)
         return {"ok": True}
 
-    cfg            = integration.config or {}
+    bot_row = get_bot_by_id(db, mapping.bot_id)
+    if bot_row is None:
+        return {"ok": True}
+
+    cfg            = bot_row.config or {}
     signing_secret = cfg.get("signing_secret", "")
     bot_token      = cfg.get("bot_token", "")
 
-    # Step 3 — Verify request signature
+    # Verify HMAC signature
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
     if signing_secret and not _verify_signature(body_bytes, timestamp, signature, signing_secret):
@@ -138,16 +131,15 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks,
         raise HTTPException(status_code=403, detail="Invalid Slack signature")
 
     logger.info("slack_message_received", channel_id=channel_id,
-                workflow_id=str(integration.workflow_id), text_preview=text[:80])
+                bot=bot_row.name, workflow_id=str(mapping.workflow_id),
+                text_preview=text[:80])
 
-    # Step 4 — Run workflow in background, reply when done
     background_tasks.add_task(
         _run_and_reply,
-        workflow_id=str(integration.workflow_id),
+        workflow_id=str(mapping.workflow_id),
         task=text,
         channel_id=channel_id,
         bot_token=bot_token,
         thread_ts=thread_ts,
     )
-
     return {"ok": True}

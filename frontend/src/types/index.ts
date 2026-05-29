@@ -210,3 +210,39 @@ export interface IntegrationUpdate {
   config?: Record<string, string>
   enabled?: boolean
 }
+
+export interface ChannelBot {
+  id: string
+  name: string
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>  // sensitive fields returned masked as "••••"
+  enabled: boolean
+  created_at: string
+}
+
+export interface BotCreate {
+  name: string
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>
+}
+
+export interface BotUpdate {
+  name?: string
+  config?: Record<string, string>
+  enabled?: boolean
+}
+
+export interface SlackChannelMapping {
+  id: string
+  bot_id: string
+  channel_id: string
+  channel_name?: string
+  workflow_id: string
+  created_at: string
+}
+
+export interface SlackMappingCreate {
+  channel_id: string
+  workflow_id: string
+  channel_name?: string
+}

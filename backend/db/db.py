@@ -76,7 +76,30 @@ class TelegramChatMappingORM(Base):
     chat_id     = Column(Text, primary_key=True)
     workflow_id = Column(PG_UUID(as_uuid=True), nullable=False)
     username    = Column(Text, nullable=True)
+    bot_id      = Column(PG_UUID(as_uuid=True), ForeignKey("channel_bots.id", ondelete="SET NULL"), nullable=True)
     created_at  = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class ChannelBotORM(Base):
+    __tablename__ = "channel_bots"
+
+    id           = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name         = Column(Text, nullable=False)
+    channel_type = Column(Text, nullable=False)
+    config       = Column(JSONB, nullable=False, default=dict)
+    enabled      = Column(Boolean, nullable=False, default=True)
+    created_at   = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class SlackChannelMappingORM(Base):
+    __tablename__ = "slack_channel_mappings"
+
+    id           = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bot_id       = Column(PG_UUID(as_uuid=True), ForeignKey("channel_bots.id", ondelete="CASCADE"), nullable=False)
+    channel_id   = Column(Text, nullable=False)
+    channel_name = Column(Text, nullable=True)
+    workflow_id  = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    created_at   = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
 class ToolORM(Base):
@@ -480,6 +503,97 @@ def find_slack_integration_by_channel(db: Session, channel_id: str) -> Optional[
         if (row.config or {}).get("channel_id") == channel_id:
             return row
     return None
+
+
+# ── Channel bots ──────────────────────────────────────────────────────────────
+
+def create_bot(db: Session, *, name: str, channel_type: str, config: dict) -> ChannelBotORM:
+    row = ChannelBotORM(name=name, channel_type=channel_type, config=config)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def get_bot_by_id(db: Session, bot_id: UUID) -> Optional[ChannelBotORM]:
+    return db.query(ChannelBotORM).filter(ChannelBotORM.id == bot_id).first()
+
+
+def list_bots(db: Session) -> List[ChannelBotORM]:
+    return db.query(ChannelBotORM).order_by(ChannelBotORM.created_at.asc()).all()
+
+
+def update_bot(db: Session, bot_id: UUID, **kwargs) -> Optional[ChannelBotORM]:
+    row = db.query(ChannelBotORM).filter(ChannelBotORM.id == bot_id).first()
+    if row is None:
+        return None
+    for k, v in kwargs.items():
+        setattr(row, k, v)
+    db.commit(); db.refresh(row)
+    return row
+
+
+def delete_bot(db: Session, bot_id: UUID) -> bool:
+    row = db.query(ChannelBotORM).filter(ChannelBotORM.id == bot_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Slack channel mappings ────────────────────────────────────────────────────
+
+def create_slack_mapping(db: Session, *, bot_id: UUID, channel_id: str,
+                         workflow_id: UUID, channel_name: Optional[str] = None) -> SlackChannelMappingORM:
+    row = SlackChannelMappingORM(bot_id=bot_id, channel_id=channel_id,
+                                  workflow_id=workflow_id, channel_name=channel_name)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def list_slack_mappings_for_bot(db: Session, bot_id: UUID) -> List[SlackChannelMappingORM]:
+    return (db.query(SlackChannelMappingORM)
+              .filter(SlackChannelMappingORM.bot_id == bot_id)
+              .order_by(SlackChannelMappingORM.created_at.asc()).all())
+
+
+def find_slack_mapping_by_channel(db: Session, channel_id: str) -> Optional[SlackChannelMappingORM]:
+    """Return the first Slack mapping for a channel_id (across all enabled bots)."""
+    return (db.query(SlackChannelMappingORM)
+              .join(ChannelBotORM, SlackChannelMappingORM.bot_id == ChannelBotORM.id)
+              .filter(SlackChannelMappingORM.channel_id == channel_id,
+                      ChannelBotORM.enabled.is_(True))
+              .first())
+
+
+def delete_slack_mapping(db: Session, mapping_id: UUID) -> bool:
+    row = db.query(SlackChannelMappingORM).filter(SlackChannelMappingORM.id == mapping_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Telegram mappings scoped to a bot ─────────────────────────────────────────
+
+def list_telegram_mappings_for_bot(db: Session, bot_id: UUID) -> List[TelegramChatMappingORM]:
+    return (db.query(TelegramChatMappingORM)
+              .filter(TelegramChatMappingORM.bot_id == bot_id)
+              .order_by(TelegramChatMappingORM.created_at.asc()).all())
+
+
+def set_chat_mapping_for_bot(db: Session, *, chat_id: str, workflow_id: UUID,
+                              bot_id: UUID, username: Optional[str] = None) -> TelegramChatMappingORM:
+    existing = db.query(TelegramChatMappingORM).filter(
+        TelegramChatMappingORM.chat_id == chat_id).first()
+    if existing:
+        existing.workflow_id = workflow_id
+        existing.bot_id = bot_id
+        existing.username = username
+    else:
+        existing = TelegramChatMappingORM(chat_id=chat_id, workflow_id=workflow_id,
+                                           bot_id=bot_id, username=username)
+        db.add(existing)
+    db.commit(); db.refresh(existing)
+    return existing
 
 
 def update_integration(db: Session, integration_id: UUID, **kwargs) -> Optional[WorkflowIntegrationORM]:

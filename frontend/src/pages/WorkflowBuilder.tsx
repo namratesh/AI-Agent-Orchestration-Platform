@@ -4,7 +4,6 @@ import {
   GitBranch, Plus, Play, Bot, Wrench, Clock, Network,
   RefreshCw, ChevronRight, Layers, Trash2, LayoutTemplate, X,
   ArrowRight, Calendar, ToggleLeft, ToggleRight, AlarmClock,
-  MessageSquare, Send, Eye, EyeOff,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -12,9 +11,8 @@ import clsx from 'clsx'
 import {
   listWorkflows, executeWorkflow, deleteWorkflow,
   listSchedules, createSchedule, updateScheduleApi, deleteScheduleApi,
-  listIntegrations, createIntegration, updateIntegrationApi, deleteIntegrationApi,
 } from '../api'
-import type { Workflow, WorkflowIntegration, WorkflowSchedule } from '../types'
+import type { Workflow, WorkflowSchedule } from '../types'
 import { PageSpinner } from '../components/LoadingSpinner'
 
 function fmtDate(iso: string) {
@@ -283,257 +281,12 @@ function ScheduleModal({ workflow, onClose }: { workflow: Workflow; onClose: () 
   )
 }
 
-// ─── Channel field config ──────────────────────────────────────────────────────
-const CHANNEL_FIELDS: Record<string, { key: string; label: string; placeholder: string; required: boolean; secret?: boolean }[]> = {
-  telegram: [
-    { key: 'bot_token',  label: 'Bot Token',  placeholder: '123456:ABCdef…',    required: true,  secret: true },
-    { key: 'chat_id',    label: 'Chat ID',    placeholder: '625882718',          required: true  },
-    { key: 'username',   label: 'Username',   placeholder: '@myuser (optional)', required: false },
-  ],
-  slack: [
-    { key: 'bot_token',      label: 'Bot Token (xoxb-…)',   placeholder: 'xoxb-…',                   required: true,  secret: true },
-    { key: 'signing_secret', label: 'Signing Secret',       placeholder: 'abc123…',                  required: true,  secret: true },
-    { key: 'channel_id',     label: 'Channel ID',           placeholder: 'C0123456789',              required: true  },
-    { key: 'channel_name',   label: 'Channel Name',         placeholder: '#general (display label)', required: false },
-  ],
-}
-
-function SecretInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  const [visible, setVisible] = useState(false)
-  return (
-    <div className="flex items-center gap-1">
-      <input
-        type={visible ? 'text' : 'password'}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="flex-1 text-sm rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-      />
-      <button type="button" onClick={() => setVisible(v => !v)} className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-        {visible ? <EyeOff size={14} /> : <Eye size={14} />}
-      </button>
-    </div>
-  )
-}
-
-function IntegrationModal({ workflow, onClose }: { workflow: Workflow; onClose: () => void }) {
-  const [integrations, setIntegrations] = useState<WorkflowIntegration[]>([])
-  const [loading, setLoading]           = useState(true)
-  const [channel, setChannel]           = useState<'telegram' | 'slack'>('telegram')
-  const [fields, setFields]             = useState<Record<string, string>>({})
-  const [saving, setSaving]             = useState(false)
-
-  useEffect(() => {
-    listIntegrations(workflow.id)
-      .then(setIntegrations)
-      .catch(() => toast.error('Failed to load integrations'))
-      .finally(() => setLoading(false))
-  }, [workflow.id])
-
-  const resetFields = (ch: 'telegram' | 'slack') => {
-    setChannel(ch)
-    setFields({})
-  }
-
-  const handleCreate = async () => {
-    const defs = CHANNEL_FIELDS[channel]
-    for (const f of defs) {
-      if (f.required && !fields[f.key]?.trim()) {
-        toast.error(`${f.label} is required`); return
-      }
-    }
-    setSaving(true)
-    try {
-      const row = await createIntegration(workflow.id, { channel_type: channel, config: fields })
-      setIntegrations(prev => [...prev, row])
-      setFields({})
-      toast.success(`${channel === 'telegram' ? 'Telegram' : 'Slack'} integration added`)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.detail ?? 'Failed to save integration')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const toggleEnabled = async (it: WorkflowIntegration) => {
-    try {
-      const updated = await updateIntegrationApi(it.id, { enabled: !it.enabled })
-      setIntegrations(prev => prev.map(x => x.id === it.id ? updated : x))
-    } catch { toast.error('Failed to update integration') }
-  }
-
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteIntegrationApi(id)
-      setIntegrations(prev => prev.filter(x => x.id !== id))
-      toast.success('Integration removed')
-    } catch { toast.error('Failed to delete integration') }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-lg overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex items-center gap-2">
-            <MessageSquare size={18} className="text-indigo-500" />
-            <h2 className="font-bold text-gray-900 dark:text-gray-100">Channel Integrations — {workflow.name}</h2>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
-          {/* Existing integrations */}
-          {loading ? (
-            <p className="text-sm text-gray-400 text-center py-4">Loading…</p>
-          ) : integrations.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-4">No integrations yet — add one below.</p>
-          ) : (
-            <div className="space-y-2">
-              {integrations.map(it => (
-                <div key={it.id} className="flex items-start gap-3 p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40">
-                  <button onClick={() => toggleEnabled(it)} className="mt-0.5 shrink-0">
-                    {it.enabled
-                      ? <ToggleRight size={20} className="text-indigo-500" />
-                      : <ToggleLeft  size={20} className="text-gray-400" />
-                    }
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={clsx(
-                        'text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide',
-                        it.channel_type === 'telegram'
-                          ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
-                          : 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400',
-                      )}>
-                        {it.channel_type}
-                      </span>
-                      {!it.enabled && <span className="text-[10px] text-gray-400 italic">disabled</span>}
-                    </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">
-                      {it.channel_type === 'telegram'
-                        ? `Chat ID: ${it.config.chat_id ?? '—'}${it.config.username ? ` · ${it.config.username}` : ''}`
-                        : `Channel: ${it.config.channel_id ?? '—'}${it.config.channel_name ? ` (#${it.config.channel_name})` : ''}`}
-                    </p>
-                  </div>
-                  <button onClick={() => handleDelete(it.id)} className="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all shrink-0">
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Add new integration */}
-          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-4">
-            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Add Integration</p>
-
-            {/* Channel selector */}
-            <div className="grid grid-cols-2 gap-3">
-              {(['telegram', 'slack'] as const).map(ch => (
-                <button
-                  key={ch}
-                  onClick={() => resetFields(ch)}
-                  className={clsx(
-                    'flex flex-col items-center gap-2 py-4 rounded-xl border-2 transition-all',
-                    channel === ch
-                      ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
-                      : 'border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600',
-                  )}
-                >
-                  <div className={clsx(
-                    'w-10 h-10 rounded-xl flex items-center justify-center',
-                    ch === 'telegram' ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-purple-100 dark:bg-purple-900/30',
-                  )}>
-                    {ch === 'telegram'
-                      ? <Send size={18} className="text-blue-500" />
-                      : <MessageSquare size={18} className="text-purple-500" />
-                    }
-                  </div>
-                  <span className={clsx(
-                    'text-sm font-semibold capitalize',
-                    channel === ch ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-600 dark:text-gray-300',
-                  )}>
-                    {ch}
-                  </span>
-                  <span className="text-[10px] text-gray-400 text-center px-2">
-                    {ch === 'telegram' ? 'Send via Telegram Bot' : 'Post to Slack channel'}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {/* Dynamic fields */}
-            <div className="space-y-3">
-              {CHANNEL_FIELDS[channel].map(f => (
-                <div key={f.key}>
-                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">
-                    {f.label} {f.required && <span className="text-red-400">*</span>}
-                  </label>
-                  {f.secret ? (
-                    <SecretInput
-                      value={fields[f.key] ?? ''}
-                      onChange={v => setFields(prev => ({ ...prev, [f.key]: v }))}
-                      placeholder={f.placeholder}
-                    />
-                  ) : (
-                    <input
-                      value={fields[f.key] ?? ''}
-                      onChange={e => setFields(prev => ({ ...prev, [f.key]: e.target.value }))}
-                      placeholder={f.placeholder}
-                      className="w-full text-sm rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-
-            {/* Help text per channel */}
-            <div className="rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-              {channel === 'telegram' ? (
-                <>
-                  <strong className="text-gray-700 dark:text-gray-300">How to get these:</strong><br />
-                  1. Message <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">@BotFather</code> → <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">/newbot</code> → copy the token.<br />
-                  2. Start a chat with your bot, then visit<br />
-                  <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> to get your Chat ID.
-                </>
-              ) : (
-                <>
-                  <strong className="text-gray-700 dark:text-gray-300">How to set up bidirectional Slack chat:</strong><br />
-                  1. Create a Slack app at <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">api.slack.com/apps</code> → enable <strong>Event Subscriptions</strong>.<br />
-                  2. Set Request URL to <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">{location.origin}/slack/events</code><br />
-                  3. Subscribe to <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">message.channels</code> bot event.<br />
-                  4. Under <strong>OAuth &amp; Permissions</strong> add <code className="bg-gray-200 dark:bg-gray-700 px-1 rounded">chat:write</code> scope → install app → copy Bot Token.<br />
-                  5. Copy <strong>Signing Secret</strong> from Basic Information.<br />
-                  6. Channel ID: right-click the channel in Slack → Copy Link → last segment.
-                </>
-              )}
-            </div>
-
-            <button
-              onClick={handleCreate}
-              disabled={saving}
-              className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors"
-            >
-              {saving ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
-              {saving ? 'Saving…' : `Connect ${channel === 'telegram' ? 'Telegram' : 'Slack'}`}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun: (id: string) => void; onDelete: (id: string) => void }) {
-  const [running, setRunning]               = useState(false)
-  const [task, setTask]                     = useState('')
-  const [showRun, setShowRun]               = useState(false)
-  const [showSchedule, setShowSchedule]     = useState(false)
-  const [showIntegration, setShowIntegration] = useState(false)
+  const [running, setRunning]           = useState(false)
+  const [task, setTask]                 = useState('')
+  const [showRun, setShowRun]           = useState(false)
+  const [showSchedule, setShowSchedule] = useState(false)
 
   const agentNodes = workflow.definition.nodes.filter(n => n.type === 'AGENT').length
   const toolNodes  = workflow.definition.nodes.filter(n => n.type === 'TOOL').length
@@ -557,8 +310,7 @@ function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun
 
   return (
     <>
-      {showSchedule    && <ScheduleModal     workflow={workflow} onClose={() => setShowSchedule(false)} />}
-      {showIntegration && <IntegrationModal  workflow={workflow} onClose={() => setShowIntegration(false)} />}
+      {showSchedule && <ScheduleModal workflow={workflow} onClose={() => setShowSchedule(false)} />}
       <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
       {/* Card header */}
       <div className="px-5 py-4 flex items-start justify-between gap-3">
@@ -598,13 +350,6 @@ function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun
             title="Manage schedules"
           >
             <AlarmClock size={14} />
-          </button>
-          <button
-            onClick={() => setShowIntegration(v => !v)}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors"
-            title="Channel integrations (Telegram / Slack)"
-          >
-            <MessageSquare size={14} />
           </button>
           <button
             onClick={() => setShowRun(v => !v)}
