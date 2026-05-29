@@ -236,7 +236,6 @@ function ExecutionPanel({ workflow, agentMap }: { workflow: Workflow; agentMap: 
   }
 
   const isRunning = runStatus === 'queued' || runStatus === 'running'
-  const nodeOutputEntries = liveRec?.node_outputs ? Object.entries(liveRec.node_outputs) : []
 
   return (
     <div className="flex flex-col h-full space-y-4">
@@ -308,40 +307,37 @@ function ExecutionPanel({ workflow, agentMap }: { workflow: Workflow; agentMap: 
               <Loader2 size={14} className="animate-spin shrink-0" />
               {runStatus === 'queued' ? 'Queued — waiting to start…' : 'Pipeline running…'}
             </div>
-            {/* Live node outputs as they complete */}
-            {nodeOutputEntries.length > 0 && (
-              <div className="space-y-2">
-                {nodeOutputEntries.map(([nodeId, output], idx) => {
-                  const isTool = nodeId.startsWith('tool')
-                  const Icon = isTool ? Wrench : Bot
-                  const color = isTool ? 'text-emerald-500' : 'text-indigo-500'
-                  const bg = isTool
-                    ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800'
-                    : 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800'
-                  return (
-                    <div key={nodeId} className={`rounded-xl border p-3 ${bg} animate-slide-up`}>
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <CheckCircle size={10} className="text-emerald-500" />
-                        <span className="text-[10px] font-bold text-gray-400">Step {idx + 1}</span>
-                        <Icon size={10} className={color} />
-                        <span className={`text-[10px] font-semibold font-mono ${color}`}>{nodeId}</span>
-                      </div>
-                      <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-3">{output as string}</p>
+            {/* All nodes shown immediately — spinner turns to check as each completes */}
+            <div className="space-y-2">
+              {orderedNodes.map((node, idx) => {
+                const doneOutput = liveRec?.node_outputs?.[node.id]
+                const isDone = doneOutput !== undefined
+                const isTool = node.type === 'TOOL'
+                const Icon = isTool ? Wrench : Bot
+                const color = isTool ? 'text-emerald-500' : 'text-indigo-500'
+                const bg = isDone
+                  ? (isTool
+                      ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800')
+                  : 'border-dashed border-gray-200 dark:border-gray-700 opacity-50'
+                return (
+                  <div key={node.id} className={`rounded-xl border p-3 ${bg}`}>
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      {isDone
+                        ? <CheckCircle size={10} className="text-emerald-500" />
+                        : <Loader2 size={10} className="animate-spin text-gray-400" />
+                      }
+                      <span className="text-[10px] font-bold text-gray-400">Step {idx + 1}</span>
+                      <Icon size={10} className={color} />
+                      <span className={`text-[10px] font-semibold font-mono ${color}`}>{node.id}</span>
                     </div>
-                  )
-                })}
-                {/* Pending nodes */}
-                {orderedNodes.slice(nodeOutputEntries.length).map((node, idx) => (
-                  <div key={node.id} className="rounded-xl border border-dashed border-gray-200 dark:border-gray-700 p-3 opacity-50">
-                    <div className="flex items-center gap-1.5">
-                      <Loader2 size={10} className="animate-spin text-gray-400" />
-                      <span className="text-[10px] font-bold text-gray-400">Step {nodeOutputEntries.length + idx + 1}</span>
-                      <span className="text-[10px] font-mono text-gray-400">{node.id}</span>
-                    </div>
+                    {isDone && (
+                      <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-3 mt-1">{String(doneOutput)}</p>
+                    )}
                   </div>
-                ))}
-              </div>
-            )}
+                )
+              })}
+            </div>
           </div>
         )}
 

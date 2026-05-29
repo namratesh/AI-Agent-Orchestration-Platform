@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, text
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -348,6 +349,8 @@ def patch_execution_progress(db: Session, execution_id: UUID,
         return
     row.status = "running"
     row.node_outputs = {**(row.node_outputs or {}), **node_outputs}
+    # SQLAlchemy may not detect JSONB dict re-assignment as dirty; force it.
+    flag_modified(row, "node_outputs")
     db.commit()
 
 
