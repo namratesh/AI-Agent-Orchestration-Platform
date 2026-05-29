@@ -159,6 +159,7 @@ class ExecutionRecord(BaseModel):
     source: str = "ui"
     created_at: datetime
     node_outputs: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

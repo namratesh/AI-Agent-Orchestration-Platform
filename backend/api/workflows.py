@@ -10,7 +10,7 @@ from db.db import (create_execution_queued, create_workflow, delete_workflow,
                    get_db, get_workflow, list_checkpoints, list_workflows)
 from schemas.models import (CheckpointResponse, ExecuteRequest, Workflow,
                             WorkflowCreate, WorkflowExecuteResponse)
-from services.workflow_executor import workflow_executor
+from services.workflow_executor import validate_workflow_definition, workflow_executor
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 logger = get_logger(__name__)
@@ -52,8 +52,13 @@ def get_workflow_endpoint(workflow_id: UUID, db: Session = Depends(get_db)):
 def execute_workflow_endpoint(workflow_id: UUID, payload: ExecuteRequest,
                               request: Request, background_tasks: BackgroundTasks,
                               db: Session = Depends(get_db)):
-    if get_workflow(db, workflow_id) is None:
+    workflow_row = get_workflow(db, workflow_id)
+    if workflow_row is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+
+    validation_errors = validate_workflow_definition(db, workflow_row.definition)
+    if validation_errors:
+        raise HTTPException(status_code=422, detail={"errors": validation_errors})
 
     trace_id = request.state.trace_id
     logger.bind(trace_id=trace_id).info("workflow_execute_queued",

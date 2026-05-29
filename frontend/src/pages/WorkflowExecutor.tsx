@@ -73,7 +73,7 @@ export default function WorkflowExecutor() {
           } else if (rec.status === 'error') {
             clearInterval(pollRef.current!)
             setRunStatus('error')
-            setError(rec.result || 'Execution failed')
+            setError(rec.error_message || rec.result || 'Execution failed')
             toast.error('Execution failed')
           } else if (attempts >= 60) {
             // 60 × 2s = 2 min timeout

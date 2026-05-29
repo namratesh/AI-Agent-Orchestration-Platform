@@ -92,6 +92,7 @@ export interface ExecutionRecord {
   source: string
   created_at: string
   node_outputs?: Record<string, string>
+  error_message?: string
 }
 
 export interface StatsResponse {

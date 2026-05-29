@@ -231,10 +231,19 @@ export default function ExecutionHistory() {
               </div>
             )}
 
+            {detail.status === 'error' && detail.error_message && (
+              <div>
+                <p className="label">Error Details</p>
+                <div className="bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-700 p-4 max-h-48 overflow-y-auto">
+                  <p className="text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap font-mono">{detail.error_message}</p>
+                </div>
+              </div>
+            )}
+
             <div>
               <p className="label">Final Result</p>
               <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-200 dark:border-gray-700 p-4 max-h-48 overflow-y-auto">
-                <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{detail.result}</p>
+                <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{detail.result || <span className="text-gray-400 italic">No output</span>}</p>
               </div>
             </div>
             <div className="text-xs text-gray-400 dark:text-gray-500 space-y-1">

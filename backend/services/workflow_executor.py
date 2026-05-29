@@ -17,8 +17,8 @@ from langgraph.graph import END, StateGraph
 from opentelemetry import trace as otel_trace
 
 from core.logging_config import get_logger
-from db.db import (SessionLocal, get_tool, get_workflow, save_checkpoint,
-                   save_execution, update_execution)
+from db.db import (SessionLocal, get_agent, get_tool, get_workflow,
+                   save_checkpoint, save_execution, update_execution)
 from instrumentation import record_workflow_execution
 from services.executor import agent_executor
 
@@ -213,6 +213,59 @@ def _build_langgraph(definition: dict, trace_id: str,
     return graph.compile()
 
 
+# ── Pre-flight validation ─────────────────────────────────────────────────────
+
+def validate_workflow_definition(db, defn: dict) -> list[str]:
+    """Return a list of error strings; empty list means the definition is valid."""
+    errors: list[str] = []
+    nodes = defn.get("nodes", [])
+    edges = defn.get("edges", [])
+    start = defn.get("start_node_id", "")
+
+    node_ids = {n["id"] for n in nodes}
+
+    if not nodes:
+        errors.append("Workflow has no nodes.")
+        return errors
+
+    if start not in node_ids:
+        errors.append(f"start_node_id '{start}' does not match any node.")
+
+    for node in nodes:
+        ntype = node.get("type", "AGENT")
+        nid   = node.get("id", "<unknown>")
+        if ntype == "AGENT":
+            agent_id = node.get("agent_id")
+            if not agent_id:
+                errors.append(f"Node '{nid}': AGENT node is missing agent_id.")
+            else:
+                try:
+                    if get_agent(db, UUID(str(agent_id))) is None:
+                        errors.append(f"Node '{nid}': agent {agent_id} not found.")
+                except Exception:
+                    errors.append(f"Node '{nid}': invalid agent_id '{agent_id}'.")
+        elif ntype == "TOOL":
+            tool_id = node.get("tool_id")
+            if not tool_id:
+                errors.append(f"Node '{nid}': TOOL node is missing tool_id.")
+            else:
+                try:
+                    if get_tool(db, UUID(str(tool_id))) is None:
+                        errors.append(f"Node '{nid}': tool {tool_id} not found.")
+                except Exception:
+                    errors.append(f"Node '{nid}': invalid tool_id '{tool_id}'.")
+
+    for edge in edges:
+        src = edge.get("source_node_id", "")
+        tgt = edge.get("target_node_id", "")
+        if src not in node_ids:
+            errors.append(f"Edge references unknown source node '{src}'.")
+        if tgt not in node_ids:
+            errors.append(f"Edge references unknown target node '{tgt}'.")
+
+    return errors
+
+
 # ── Public executor class ─────────────────────────────────────────────────────
 
 class WorkflowExecutor:
@@ -305,21 +358,23 @@ class WorkflowExecutor:
 
         except Exception as exc:
             elapsed = time.perf_counter() - t0
+            err_msg = str(exc)
             span.record_exception(exc)
-            span.set_status(otel_trace.StatusCode.ERROR, str(exc))
+            span.set_status(otel_trace.StatusCode.ERROR, err_msg)
             if existing_execution_id:
                 update_execution(
-                    db, existing_execution_id, status="error", result=str(exc),
-                    execution_time_seconds=elapsed,
+                    db, existing_execution_id, status="error", result="",
+                    execution_time_seconds=elapsed, error_message=err_msg,
                 )
             else:
                 save_execution(
-                    db, workflow_id=workflow_id, task=task, result=str(exc),
+                    db, workflow_id=workflow_id, task=task, result="",
                     status="error", tokens_used=0, cost=0.0,
                     execution_time_seconds=elapsed, source=source,
+                    error_message=err_msg,
                 )
             record_workflow_execution(status="error")
-            log.error("workflow_failed", error=str(exc))
+            log.error("workflow_failed", error=err_msg)
             raise
         finally:
             db.close()

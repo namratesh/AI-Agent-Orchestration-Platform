@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import List, Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -6,6 +6,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     LOG_LEVEL: str = "INFO"
+
+    # Auth — leave empty to disable auth (safe for fully local deployments)
+    API_SECRET_KEY: str = ""
+
+    # CORS — comma-separated list of allowed origins; defaults to Vite dev server
+    ALLOWED_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
 
     LLM_PROVIDER: Literal["openai", "openrouter", "groq", "ollama"] = "openrouter"
 

@@ -132,6 +132,7 @@ class WorkflowExecutionORM(Base):
     execution_time_seconds = Column(Numeric(10, 3), nullable=False, default=0)
     source                = Column(String(32), nullable=False, default="ui")
     node_outputs          = Column(JSONB, nullable=False, default=dict)
+    error_message         = Column(Text, nullable=True)
     created_at            = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
@@ -309,11 +310,13 @@ def save_execution(db: Session, *, workflow_id: Optional[UUID], task: str, resul
                    status: str = "success", tokens_used: int = 0, cost: float = 0.0,
                    execution_time_seconds: float = 0.0,
                    source: str = "ui",
-                   node_outputs: Optional[Dict[str, Any]] = None) -> WorkflowExecutionORM:
+                   node_outputs: Optional[Dict[str, Any]] = None,
+                   error_message: Optional[str] = None) -> WorkflowExecutionORM:
     row = WorkflowExecutionORM(workflow_id=workflow_id, task=task, result=result,
                                status=status, tokens_used=tokens_used, cost=cost,
                                execution_time_seconds=execution_time_seconds, source=source,
-                               node_outputs=node_outputs or {})
+                               node_outputs=node_outputs or {},
+                               error_message=error_message)
     db.add(row); db.commit(); db.refresh(row)
     return row
 
@@ -329,7 +332,8 @@ def create_execution_queued(db: Session, *, workflow_id: Optional[UUID], task: s
 def update_execution(db: Session, execution_id: UUID, *, status: str, result: str = "",
                      tokens_used: int = 0, cost: float = 0.0,
                      execution_time_seconds: float = 0.0,
-                     node_outputs: Optional[Dict[str, Any]] = None) -> Optional[WorkflowExecutionORM]:
+                     node_outputs: Optional[Dict[str, Any]] = None,
+                     error_message: Optional[str] = None) -> Optional[WorkflowExecutionORM]:
     row = db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.id == execution_id).first()
     if row is None:
         return None
@@ -340,6 +344,8 @@ def update_execution(db: Session, execution_id: UUID, *, status: str, result: st
     row.execution_time_seconds = execution_time_seconds
     if node_outputs is not None:
         row.node_outputs = node_outputs
+    if error_message is not None:
+        row.error_message = error_message
     db.commit()
     db.refresh(row)
     return row

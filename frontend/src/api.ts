@@ -15,6 +15,12 @@ export type { Agent, AgentCreate, BotCreate, BotUpdate, ChannelBot, ExecutionRec
 
 export const api = axios.create({ baseURL: '' })
 
+// Attach API key when configured (set VITE_API_KEY in .env)
+const _apiKey = import.meta.env.VITE_API_KEY as string | undefined
+if (_apiKey) {
+  api.defaults.headers.common['Authorization'] = `Bearer ${_apiKey}`
+}
+
 // ── Agents ────────────────────────────────────────────────────────────────────
 export const listAgents    = () => api.get<Agent[]>('/agents').then(r => r.data)
 export const getAgent      = (id: string) => api.get<Agent>(`/agents/${id}`).then(r => r.data)
