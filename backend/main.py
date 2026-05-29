@@ -6,11 +6,12 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 
-from api import agents, bots, executions, integrations, logs, schedules, slack, stats, telegram, tools, workflows
+from api import agents, bots, executions, integrations, logs, schedules, seed, slack, stats, telegram, tools, workflows
 from core.auth import require_api_key
 from core.config import settings
 from core.logging_config import get_logger, setup_logging
 from db.db import engine
+from db.seed import seed_demo_data
 from instrumentation import setup_otel
 from services import scheduler as svc_scheduler
 from services.log_broadcaster import log_broadcaster
@@ -45,6 +46,7 @@ app.include_router(logs.router,         dependencies=_auth)
 app.include_router(executions.router,   dependencies=_auth)
 app.include_router(stats.router,        dependencies=_auth)
 app.include_router(tools.router,        dependencies=_auth)
+app.include_router(seed.router,         dependencies=_auth)
 
 
 @app.on_event("startup")
@@ -53,6 +55,7 @@ async def startup():
     setup_otel(app=app, engine=engine)
     log_broadcaster.set_loop(asyncio.get_event_loop())
     svc_scheduler.start()
+    seed_demo_data()
     logger.info("app_startup", message="AI Agent Orchestration Platform starting")
 
 

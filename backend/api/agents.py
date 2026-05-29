@@ -3,6 +3,7 @@ from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
@@ -16,9 +17,13 @@ logger = get_logger(__name__)
 
 @router.post("", response_model=Agent, status_code=201)
 def create_agent_endpoint(payload: AgentCreate, db: Session = Depends(get_db)):
-    row = create_agent(db, name=payload.name, role=payload.role,
-                       system_prompt=payload.system_prompt, model=payload.model,
-                       provider=payload.provider, tools=payload.tools, config=payload.config)
+    try:
+        row = create_agent(db, name=payload.name, role=payload.role,
+                           system_prompt=payload.system_prompt, model=payload.model,
+                           provider=payload.provider, tools=payload.tools, config=payload.config)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"An agent named '{payload.name}' already exists.")
     logger.info("agent_created", agent_id=str(row.id), name=row.name, provider=row.provider)
     return Agent.model_validate(row)
 

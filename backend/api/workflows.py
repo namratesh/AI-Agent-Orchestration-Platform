@@ -3,6 +3,7 @@ from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.logging_config import get_logger
@@ -29,8 +30,12 @@ def _run_workflow_bg(execution_id: UUID, workflow_id: UUID, task: str,
 
 @router.post("", response_model=Workflow, status_code=201)
 def create_workflow_endpoint(payload: WorkflowCreate, db: Session = Depends(get_db)):
-    row = create_workflow(db, name=payload.name,
-                          definition=payload.definition.model_dump(mode="json"))
+    try:
+        row = create_workflow(db, name=payload.name,
+                              definition=payload.definition.model_dump(mode="json"))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"A workflow named '{payload.name}' already exists.")
     logger.info("workflow_created", workflow_id=str(row.id), name=row.name)
     return Workflow.model_validate(row)
 

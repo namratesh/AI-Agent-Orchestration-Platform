@@ -15,7 +15,14 @@ interface Props {
   onClick?: () => void
 }
 
+function promptSnippet(prompt: string): string {
+  const cleaned = prompt.replace(/\s+/g, ' ').trim()
+  return cleaned.length > 90 ? cleaned.slice(0, 87) + '…' : cleaned
+}
+
 export default function AgentCard({ agent, onDelete, selected, onClick }: Props) {
+  const snippet = agent.system_prompt ? promptSnippet(agent.system_prompt) : ''
+
   return (
     <div
       onClick={onClick}
@@ -37,6 +44,14 @@ export default function AgentCard({ agent, onDelete, selected, onClick }: Props)
             </button>
           </div>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{agent.role}</p>
+          {snippet && (
+            <p
+              className="mt-1.5 text-xs text-gray-400 dark:text-gray-500 leading-relaxed line-clamp-2 cursor-default"
+              title={agent.system_prompt}
+            >
+              {snippet}
+            </p>
+          )}
           <div className="mt-2 flex flex-wrap gap-1.5">
             <span className={PROVIDER_COLORS[agent.provider] ?? 'badge-gray'}>{agent.provider}</span>
             {agent.tools.map(t => (

@@ -13,6 +13,7 @@ from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from db.db import (
@@ -61,8 +62,12 @@ def create_bot_endpoint(payload: BotCreate, db: Session = Depends(get_db)):
         payload.validate_config()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    row = create_bot(db, name=payload.name, channel_type=payload.channel_type,
-                     config=payload.config)
+    try:
+        row = create_bot(db, name=payload.name, channel_type=payload.channel_type,
+                         config=payload.config)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"A bot named '{payload.name}' already exists.")
     return _bot_response(row)
 
 
@@ -71,7 +76,12 @@ def update_bot_endpoint(bot_id: UUID, payload: BotUpdate, db: Session = Depends(
     if get_bot_by_id(db, bot_id) is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     kwargs = {k: v for k, v in payload.model_dump().items() if v is not None}
-    row = update_bot(db, bot_id, **kwargs)
+    try:
+        row = update_bot(db, bot_id, **kwargs)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409,
+                            detail=f"A bot named '{kwargs.get('name')}' already exists.")
     return _bot_response(row)
 
 

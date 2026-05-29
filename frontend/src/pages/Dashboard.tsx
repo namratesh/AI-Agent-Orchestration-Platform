@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bot, GitBranch, Play, DollarSign, Clock, CheckCircle, XCircle, ArrowRight } from 'lucide-react'
+import {
+  Bot, GitBranch, Play, DollarSign, Clock, CheckCircle, XCircle,
+  ArrowRight, Sparkles, KeyRound, Wrench, X,
+} from 'lucide-react'
 import { getStats } from '../api'
 import type { StatsResponse, ExecutionRecord } from '../types'
 import StatsCard from '../components/StatsCard'
@@ -36,6 +39,9 @@ function buildCostChartData(executions: ExecutionRecord[]) {
 export default function Dashboard() {
   const [stats, setStats]   = useState<StatsResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [bannerDismissed, setBannerDismissed] = useState(
+    () => sessionStorage.getItem('gs_dismissed') === '1'
+  )
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -49,6 +55,17 @@ export default function Dashboard() {
 
   const chartData = buildCostChartData(stats?.recent_executions ?? [])
 
+  // Show banner when demo data was seeded (agents exist) and never run yet
+  const showGettingStarted =
+    !bannerDismissed &&
+    (stats?.total_agents ?? 0) > 0 &&
+    (stats?.recent_executions?.length ?? 0) === 0
+
+  const dismissBanner = () => {
+    sessionStorage.setItem('gs_dismissed', '1')
+    setBannerDismissed(true)
+  }
+
   return (
     <div className="animate-fade-in space-y-6">
       {/* Hero */}
@@ -56,6 +73,87 @@ export default function Dashboard() {
         <h1 className="page-title">Welcome back 👋</h1>
         <p className="page-subtitle">Here's what's happening on your AI orchestration platform.</p>
       </div>
+
+      {/* ── Getting Started banner ────────────────────────────────────── */}
+      {showGettingStarted && (
+        <div className="relative rounded-2xl border border-primary-200 dark:border-primary-800 bg-gradient-to-br from-primary-50 to-indigo-50 dark:from-primary-950/40 dark:to-indigo-950/40 p-5 overflow-hidden">
+          {/* dismiss */}
+          <button
+            onClick={dismissBanner}
+            className="absolute top-3 right-3 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded"
+            title="Dismiss"
+          >
+            <X size={16} />
+          </button>
+
+          <div className="flex items-center gap-2 mb-3">
+            <Sparkles size={18} className="text-primary-600 dark:text-primary-400" />
+            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+              Your platform is ready — 2 agents &amp; a workflow preloaded
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+            {/* Agent 1 */}
+            <div className="flex items-start gap-3 bg-white dark:bg-gray-900 rounded-xl p-3 border border-gray-100 dark:border-gray-800 shadow-sm">
+              <span className="p-2 rounded-lg bg-primary-100 dark:bg-primary-900/40 text-primary-600 dark:text-primary-400 shrink-0">
+                <Bot size={16} />
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Research Agent</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Searches the web via Tavily and summarises findings</p>
+                <span className="inline-flex items-center gap-1 mt-1 text-xs text-emerald-600 dark:text-emerald-400">
+                  <CheckCircle size={11} /> web_search enabled
+                </span>
+              </div>
+            </div>
+
+            {/* Agent 2 */}
+            <div className="flex items-start gap-3 bg-white dark:bg-gray-900 rounded-xl p-3 border border-gray-100 dark:border-gray-800 shadow-sm">
+              <span className="p-2 rounded-lg bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 shrink-0">
+                <Bot size={16} />
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Writer Agent</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Turns research notes into a polished article</p>
+              </div>
+            </div>
+
+            {/* Tavily tool */}
+            <div className="flex items-start gap-3 bg-white dark:bg-gray-900 rounded-xl p-3 border border-amber-200 dark:border-amber-800 shadow-sm">
+              <span className="p-2 rounded-lg bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 shrink-0">
+                <Wrench size={16} />
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Tavily Web Search</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">HTTP tool — add your API key to activate</p>
+                <button
+                  onClick={() => navigate('/tools')}
+                  className="inline-flex items-center gap-1 mt-1 text-xs text-amber-600 dark:text-amber-400 hover:underline"
+                >
+                  <KeyRound size={11} /> Configure key →
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate('/executor')}
+              className="btn-primary flex items-center gap-2 text-sm"
+            >
+              <Play size={14} /> Run "Research &amp; Write" workflow
+              <ArrowRight size={14} />
+            </button>
+            <button
+              onClick={() => navigate('/workflows')}
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              <GitBranch size={14} /> View workflow
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

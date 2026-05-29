@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  GitBranch, Plus, Play, Bot, Wrench, Clock, Network,
-  RefreshCw, ChevronRight, Layers, Trash2, LayoutTemplate, X,
-  ArrowRight, Calendar, ToggleLeft, ToggleRight, AlarmClock,
+  GitBranch, Plus, Play, Bot, Wrench, Clock,
+  RefreshCw, ChevronRight, Layers, Trash2, X, ArrowRight,
+  Calendar, ToggleLeft, ToggleRight, AlarmClock,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -11,91 +11,13 @@ import clsx from 'clsx'
 import {
   listWorkflows, executeWorkflow, deleteWorkflow,
   listSchedules, createSchedule, updateScheduleApi, deleteScheduleApi,
+  listAgents,
 } from '../api'
-import type { Workflow, WorkflowSchedule } from '../types'
+import type { Workflow, WorkflowSchedule, Agent } from '../types'
 import { PageSpinner } from '../components/LoadingSpinner'
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-}
-
-// ─── Hardcoded workflow templates ────────────────────────────────────────────
-const WORKFLOW_TEMPLATES = [
-  {
-    id: 'research-summarize',
-    name: 'Research & Summarize',
-    description: 'Two-agent pipeline: a researcher gathers information, then a writer produces a clean summary report.',
-    agentCount: 2,
-    toolCount: 0,
-    steps: ['Research Agent', 'Summarizer Agent'],
-  },
-  {
-    id: 'content-pipeline',
-    name: 'Content Pipeline',
-    description: 'Three-stage pipeline: collect data, analyze it, then produce a polished report — ideal for automated content generation.',
-    agentCount: 3,
-    toolCount: 0,
-    steps: ['Data Collector', 'Analyzer Agent', 'Report Writer'],
-  },
-]
-
-function TemplateModal({ onClose, onSelect }: { onClose: () => void; onSelect: (id: string) => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex items-center gap-2">
-            <LayoutTemplate size={18} className="text-indigo-500" />
-            <h2 className="font-bold text-gray-900 dark:text-gray-100">Workflow Templates</h2>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {WORKFLOW_TEMPLATES.map(tpl => (
-            <div
-              key={tpl.id}
-              className="border border-gray-200 dark:border-gray-700 rounded-xl p-4 hover:border-indigo-400 dark:hover:border-indigo-500 hover:shadow-md transition-all cursor-pointer group"
-              onClick={() => onSelect(tpl.id)}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <h3 className="font-bold text-gray-900 dark:text-gray-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                  {tpl.name}
-                </h3>
-                <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-2 py-0.5 rounded-full font-semibold">
-                  {tpl.agentCount} agents
-                </span>
-              </div>
-
-              <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed mb-3">{tpl.description}</p>
-
-              {/* Step flow visualization */}
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {tpl.steps.map((step, i) => (
-                  <div key={i} className="flex items-center gap-1.5">
-                    <span className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 text-[10px] font-medium px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800">
-                      <Bot size={9} /> {step}
-                    </span>
-                    {i < tpl.steps.length - 1 && <ArrowRight size={10} className="text-gray-400 shrink-0" />}
-                  </div>
-                ))}
-              </div>
-
-              <button
-                onClick={e => { e.stopPropagation(); onSelect(tpl.id) }}
-                className="mt-4 w-full flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2 rounded-lg transition-colors"
-              >
-                Use Template <ChevronRight size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
 }
 
 // ─── Preset intervals ─────────────────────────────────────────────────────────
@@ -282,15 +204,35 @@ function ScheduleModal({ workflow, onClose }: { workflow: Workflow; onClose: () 
 }
 
 
-function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun: (id: string) => void; onDelete: (id: string) => void }) {
+function getOrderedNodes(def: Workflow['definition']): Workflow['definition']['nodes'] {
+  const nodeMap  = new Map(def.nodes.map(n => [n.id, n]))
+  const edgeMap  = new Map(def.edges.map(e => [e.source_node_id, e.target_node_id]))
+  const visited  = new Set<string>()
+  const ordered: Workflow['definition']['nodes'] = []
+  let cur = def.start_node_id
+  while (cur && !visited.has(cur)) {
+    visited.add(cur)
+    const node = nodeMap.get(cur)
+    if (node) ordered.push(node)
+    cur = edgeMap.get(cur) ?? ''
+  }
+  // append any nodes not reachable via the main path (parallel branches)
+  for (const n of def.nodes) { if (!visited.has(n.id)) ordered.push(n) }
+  return ordered
+}
+
+function WorkflowCard({ workflow, onRun, onDelete, agentMap }: {
+  workflow: Workflow
+  onRun: (id: string) => void
+  onDelete: (id: string) => void
+  agentMap: Map<string, string>
+}) {
   const [running, setRunning]           = useState(false)
   const [task, setTask]                 = useState('')
   const [showRun, setShowRun]           = useState(false)
   const [showSchedule, setShowSchedule] = useState(false)
 
-  const agentNodes = workflow.definition.nodes.filter(n => n.type === 'AGENT').length
-  const toolNodes  = workflow.definition.nodes.filter(n => n.type === 'TOOL').length
-  const edges      = workflow.definition.edges.length
+  const orderedNodes = getOrderedNodes(workflow.definition)
 
   const handleRun = async () => {
     if (!task.trim()) { toast.error('Enter a task to run'); return }
@@ -318,20 +260,35 @@ function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun
           <div className="w-10 h-10 rounded-xl bg-indigo-500/10 dark:bg-indigo-500/20 flex items-center justify-center shrink-0">
             <GitBranch size={18} className="text-indigo-500" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h3 className="font-bold text-gray-900 dark:text-gray-100 truncate">{workflow.name}</h3>
-            <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
-              <span className="flex items-center gap-1">
-                <Bot size={11} /> {agentNodes} agent{agentNodes !== 1 ? 's' : ''}
-              </span>
-              {toolNodes > 0 && (
-                <span className="flex items-center gap-1">
-                  <Wrench size={11} /> {toolNodes} tool{toolNodes !== 1 ? 's' : ''}
-                </span>
+            {/* Node pipeline: show ordered agent/tool names with arrows */}
+            <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+              {orderedNodes.map((node, idx) => {
+                const isTool   = node.type === 'TOOL'
+                const Icon     = isTool ? Wrench : Bot
+                const label    = isTool
+                  ? (node.tool_id ? `Tool` : 'Tool')
+                  : (node.agent_id && agentMap.has(node.agent_id)
+                      ? agentMap.get(node.agent_id)!
+                      : node.id)
+                const colors = isTool
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                  : 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800'
+                return (
+                  <div key={node.id} className="flex items-center gap-1">
+                    <span className={`flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${colors}`}>
+                      <Icon size={8} className="shrink-0" />{label}
+                    </span>
+                    {idx < orderedNodes.length - 1 && (
+                      <ArrowRight size={9} className="text-gray-300 dark:text-gray-600 shrink-0" />
+                    )}
+                  </div>
+                )
+              })}
+              {orderedNodes.length === 0 && (
+                <span className="text-xs text-gray-400 italic">Empty workflow</span>
               )}
-              <span className="flex items-center gap-1">
-                <Network size={11} /> {edges} link{edges !== 1 ? 's' : ''}
-              </span>
             </div>
           </div>
         </div>
@@ -405,15 +362,17 @@ function WorkflowCard({ workflow, onRun, onDelete }: { workflow: Workflow; onRun
 
 export default function WorkflowBuilder() {
   const [workflows, setWorkflows] = useState<Workflow[]>([])
+  const [agents, setAgents]       = useState<Agent[]>([])
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState('')
-  const [showTemplates, setShowTemplates] = useState(false)
   const navigate = useNavigate()
+
+  const agentMap = new Map(agents.map(a => [a.id, a.name]))
 
   const load = useCallback(() => {
     setLoading(true)
-    listWorkflows()
-      .then(setWorkflows)
+    Promise.all([listWorkflows(), listAgents()])
+      .then(([wfs, ags]) => { setWorkflows(wfs); setAgents(ags) })
       .catch(() => toast.error('Failed to load workflows'))
       .finally(() => setLoading(false))
   }, [])
@@ -432,21 +391,12 @@ export default function WorkflowBuilder() {
     }
   }
 
-  const handleSelectTemplate = (templateId: string) => {
-    setShowTemplates(false)
-    navigate(`/workspace?template=${templateId}`)
-  }
-
   const filtered = workflows.filter(w =>
     !search || w.name.toLowerCase().includes(search.toLowerCase())
   )
 
   return (
     <div className="space-y-6">
-      {showTemplates && (
-        <TemplateModal onClose={() => setShowTemplates(false)} onSelect={handleSelectTemplate} />
-      )}
-
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
@@ -475,12 +425,6 @@ export default function WorkflowBuilder() {
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
           </button>
           <button
-            onClick={() => setShowTemplates(true)}
-            className="flex items-center gap-2 border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
-          >
-            <LayoutTemplate size={16} /> Templates
-          </button>
-          <button
             onClick={() => navigate('/workspace')}
             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
           >
@@ -501,29 +445,21 @@ export default function WorkflowBuilder() {
             {search ? 'No workflows match your search' : 'No workflows yet'}
           </h3>
           <p className="text-sm text-gray-400 max-w-xs mb-6">
-            {search ? 'Try a different name.' : 'Start from a template or build your own in the Workspace.'}
+            {search ? 'Try a different name.' : 'Build your first workflow in the Workspace.'}
           </p>
           {!search && (
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowTemplates(true)}
-                className="flex items-center gap-2 border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors hover:bg-indigo-100"
-              >
-                <LayoutTemplate size={15} /> Use Template
-              </button>
-              <Link
-                to="/workspace"
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors"
-              >
-                <Plus size={15} /> Open Workspace
-              </Link>
-            </div>
+            <Link
+              to="/workspace"
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors"
+            >
+              <Plus size={15} /> Open Workspace
+            </Link>
           )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {filtered.map(wf => (
-            <WorkflowCard key={wf.id} workflow={wf} onRun={() => Promise.resolve()} onDelete={handleDelete} />
+            <WorkflowCard key={wf.id} workflow={wf} onRun={() => Promise.resolve()} onDelete={handleDelete} agentMap={agentMap} />
           ))}
         </div>
       )}

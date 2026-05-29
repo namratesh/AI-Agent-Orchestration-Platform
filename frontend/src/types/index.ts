@@ -160,6 +160,22 @@ export interface ToolTestRequest {
   params: Record<string, string>
 }
 
+export interface ToolTemplate {
+  slug: string
+  name: string
+  description: string
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  url: string
+  headers: Record<string, string>
+  body_template: string
+  api_key: string
+  api_key_header: string
+  api_key_prefix: string
+  timeout_seconds: number
+  setup_hint: string
+  docs_url?: string
+}
+
 export interface ToolTestResponse {
   status_code: number
   response_body: string
