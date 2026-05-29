@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle, XCircle, Clock, Zap, DollarSign, Trash2, ChevronDown, ChevronUp, Download, RefreshCw } from 'lucide-react'
+import { CheckCircle, XCircle, Clock, Zap, DollarSign, Trash2, ChevronDown, ChevronUp, Download, RefreshCw, Bot, Wrench, GitBranch } from 'lucide-react'
 import { deleteExecution, listExecutions } from '../api'
 import type { ExecutionRecord } from '../types'
 import { PageSpinner } from '../components/LoadingSpinner'
@@ -202,9 +202,38 @@ export default function ExecutionHistory() {
               <p className="label">Task</p>
               <p className="text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">{detail.task}</p>
             </div>
+
+            {/* Inter-agent message trace */}
+            {detail.node_outputs && Object.keys(detail.node_outputs).length > 0 && (
+              <div>
+                <p className="label">Message Trace <span className="font-normal text-gray-400">(inter-agent outputs)</span></p>
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {Object.entries(detail.node_outputs).map(([nodeId, output], idx) => {
+                    const isTool  = nodeId.startsWith('tool')
+                    const Icon    = isTool ? Wrench : Bot
+                    const color   = isTool ? 'text-emerald-500' : 'text-indigo-500'
+                    const bg      = isTool ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800' : 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800'
+                    const truncated = output.length > 300
+                    return (
+                      <div key={nodeId} className={`rounded-lg border p-3 ${bg}`}>
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-[10px] font-bold text-gray-400">Step {idx + 1}</span>
+                          <Icon size={11} className={color} />
+                          <span className={`text-[10px] font-semibold font-mono ${color}`}>{nodeId}</span>
+                        </div>
+                        <p className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                          {truncated ? output.slice(0, 300) + '…' : output}
+                        </p>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
             <div>
-              <p className="label">Result</p>
-              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-200 dark:border-gray-700 p-4 max-h-64 overflow-y-auto">
+              <p className="label">Final Result</p>
+              <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-200 dark:border-gray-700 p-4 max-h-48 overflow-y-auto">
                 <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{detail.result}</p>
               </div>
             </div>

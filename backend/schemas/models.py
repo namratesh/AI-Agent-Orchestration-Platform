@@ -137,12 +137,13 @@ class ExecuteResponse(BaseModel):
 class WorkflowExecuteResponse(BaseModel):
     workflow_id: UUID
     task: str
-    result: str
+    result: str = ""
     tokens_used: int = 0
     cost: float = 0.0
     trace_id: str
     execution_id: Optional[UUID] = None
     execution_time_seconds: float = 0.0
+    status: str = "queued"
 
 
 class ExecutionRecord(BaseModel):
@@ -157,6 +158,7 @@ class ExecutionRecord(BaseModel):
     execution_time_seconds: float
     source: str = "ui"
     created_at: datetime
+    node_outputs: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"from_attributes": True}
 
@@ -226,3 +228,125 @@ class ToolTestResponse(BaseModel):
     response_headers: Dict[str, str]
     duration_ms: float
     error: Optional[str] = None
+
+
+# ── Workflow schedules ────────────────────────────────────────────────────────
+
+class WorkflowSchedule(BaseModel):
+    id: UUID
+    workflow_id: UUID
+    task: str
+    cron_expression: Optional[str] = None
+    interval_minutes: Optional[int] = None
+    enabled: bool
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ScheduleCreate(BaseModel):
+    task: str = ""
+    cron_expression: Optional[str] = None
+    interval_minutes: Optional[int] = None
+
+    def validate_trigger(self) -> None:
+        if not self.cron_expression and not self.interval_minutes:
+            raise ValueError("Provide either cron_expression or interval_minutes")
+
+
+class ScheduleUpdate(BaseModel):
+    task: Optional[str] = None
+    cron_expression: Optional[str] = None
+    interval_minutes: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
+# ── Channel integrations ──────────────────────────────────────────────────────
+
+class WorkflowIntegration(BaseModel):
+    id: UUID
+    workflow_id: UUID
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class IntegrationCreate(BaseModel):
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+    def validate_config(self) -> None:
+        if self.channel_type == "telegram":
+            if not self.config.get("bot_token") or not self.config.get("chat_id"):
+                raise ValueError("Telegram requires bot_token and chat_id")
+        elif self.channel_type == "slack":
+            missing = [f for f in ("bot_token", "signing_secret", "channel_id")
+                       if not self.config.get(f)]
+            if missing:
+                raise ValueError(f"Slack requires: {', '.join(missing)}")
+        else:
+            raise ValueError(f"Unsupported channel_type: {self.channel_type!r}")
+
+
+class IntegrationUpdate(BaseModel):
+    config: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
+
+
+# ── Named channel bots ────────────────────────────────────────────────────────
+
+class ChannelBot(BaseModel):
+    id: UUID
+    name: str
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BotCreate(BaseModel):
+    name: str
+    channel_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+    def validate_config(self) -> None:
+        if self.channel_type == "telegram":
+            if not self.config.get("bot_token"):
+                raise ValueError("Telegram bot requires bot_token")
+        elif self.channel_type == "slack":
+            missing = [f for f in ("bot_token", "signing_secret")
+                       if not self.config.get(f)]
+            if missing:
+                raise ValueError(f"Slack bot requires: {', '.join(missing)}")
+        else:
+            raise ValueError(f"Unsupported channel_type: {self.channel_type!r}")
+
+
+class BotUpdate(BaseModel):
+    name: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
+
+
+class SlackChannelMapping(BaseModel):
+    id: UUID
+    bot_id: UUID
+    channel_id: str
+    channel_name: Optional[str] = None
+    workflow_id: UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SlackMappingCreate(BaseModel):
+    channel_id: str
+    workflow_id: UUID
+    channel_name: Optional[str] = None

@@ -67,6 +67,16 @@ export interface WorkflowExecuteResponse {
   trace_id: string
   execution_id?: string
   execution_time_seconds: number
+  status: string
+}
+
+export interface AgentConfig {
+  temperature?: number
+  max_tokens?: number
+  max_iterations?: number
+  memory_type?: 'none' | 'buffer'
+  memory_window?: number
+  max_output_words?: number
 }
 
 export interface ExecutionRecord {
@@ -75,12 +85,13 @@ export interface ExecutionRecord {
   workflow_name?: string
   task: string
   result: string
-  status: 'success' | 'error'
+  status: 'success' | 'error' | 'queued' | 'running'
   tokens_used: number
   cost: number
   execution_time_seconds: number
   source: string
   created_at: string
+  node_outputs?: Record<string, string>
 }
 
 export interface StatsResponse {
@@ -154,4 +165,84 @@ export interface ToolTestResponse {
   response_headers: Record<string, string>
   duration_ms: number
   error?: string
+}
+
+export interface WorkflowSchedule {
+  id: string
+  workflow_id: string
+  task: string
+  cron_expression?: string
+  interval_minutes?: number
+  enabled: boolean
+  last_run_at?: string
+  next_run_at?: string
+  created_at: string
+}
+
+export interface ScheduleCreate {
+  task: string
+  cron_expression?: string
+  interval_minutes?: number
+}
+
+export interface ScheduleUpdate {
+  task?: string
+  cron_expression?: string
+  interval_minutes?: number
+  enabled?: boolean
+}
+
+export interface WorkflowIntegration {
+  id: string
+  workflow_id: string
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>
+  enabled: boolean
+  created_at: string
+}
+
+export interface IntegrationCreate {
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>
+}
+
+export interface IntegrationUpdate {
+  config?: Record<string, string>
+  enabled?: boolean
+}
+
+export interface ChannelBot {
+  id: string
+  name: string
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>  // sensitive fields returned masked as "••••"
+  enabled: boolean
+  created_at: string
+}
+
+export interface BotCreate {
+  name: string
+  channel_type: 'telegram' | 'slack'
+  config: Record<string, string>
+}
+
+export interface BotUpdate {
+  name?: string
+  config?: Record<string, string>
+  enabled?: boolean
+}
+
+export interface SlackChannelMapping {
+  id: string
+  bot_id: string
+  channel_id: string
+  channel_name?: string
+  workflow_id: string
+  created_at: string
+}
+
+export interface SlackMappingCreate {
+  channel_id: string
+  workflow_id: string
+  channel_name?: string
 }

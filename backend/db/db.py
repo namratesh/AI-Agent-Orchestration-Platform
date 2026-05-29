@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, create_engine, func, or_, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -76,7 +76,30 @@ class TelegramChatMappingORM(Base):
     chat_id     = Column(Text, primary_key=True)
     workflow_id = Column(PG_UUID(as_uuid=True), nullable=False)
     username    = Column(Text, nullable=True)
+    bot_id      = Column(PG_UUID(as_uuid=True), ForeignKey("channel_bots.id", ondelete="SET NULL"), nullable=True)
     created_at  = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class ChannelBotORM(Base):
+    __tablename__ = "channel_bots"
+
+    id           = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name         = Column(Text, nullable=False)
+    channel_type = Column(Text, nullable=False)
+    config       = Column(JSONB, nullable=False, default=dict)
+    enabled      = Column(Boolean, nullable=False, default=True)
+    created_at   = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class SlackChannelMappingORM(Base):
+    __tablename__ = "slack_channel_mappings"
+
+    id           = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bot_id       = Column(PG_UUID(as_uuid=True), ForeignKey("channel_bots.id", ondelete="CASCADE"), nullable=False)
+    channel_id   = Column(Text, nullable=False)
+    channel_name = Column(Text, nullable=True)
+    workflow_id  = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    created_at   = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
 class ToolORM(Base):
@@ -108,7 +131,33 @@ class WorkflowExecutionORM(Base):
     cost                  = Column(Numeric(12, 8), nullable=False, default=0)
     execution_time_seconds = Column(Numeric(10, 3), nullable=False, default=0)
     source                = Column(String(32), nullable=False, default="ui")
+    node_outputs          = Column(JSONB, nullable=False, default=dict)
     created_at            = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class WorkflowScheduleORM(Base):
+    __tablename__ = "workflow_schedules"
+
+    id               = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id      = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    task             = Column(Text, nullable=False, default="")
+    cron_expression  = Column(Text, nullable=True)
+    interval_minutes = Column(Integer, nullable=True)
+    enabled          = Column(Boolean, nullable=False, default=True)
+    last_run_at      = Column(DateTime(timezone=True), nullable=True)
+    next_run_at      = Column(DateTime(timezone=True), nullable=True)
+    created_at       = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class WorkflowIntegrationORM(Base):
+    __tablename__ = "workflow_integrations"
+
+    id           = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id  = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    channel_type = Column(Text, nullable=False)
+    config       = Column(JSONB, nullable=False, default=dict)
+    enabled      = Column(Boolean, nullable=False, default=True)
+    created_at   = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
 # ── Session dependency ────────────────────────────────────────────────────────
@@ -259,11 +308,40 @@ def delete_chat_mapping(db: Session, chat_id: str) -> bool:
 def save_execution(db: Session, *, workflow_id: Optional[UUID], task: str, result: str,
                    status: str = "success", tokens_used: int = 0, cost: float = 0.0,
                    execution_time_seconds: float = 0.0,
-                   source: str = "ui") -> WorkflowExecutionORM:
+                   source: str = "ui",
+                   node_outputs: Optional[Dict[str, Any]] = None) -> WorkflowExecutionORM:
     row = WorkflowExecutionORM(workflow_id=workflow_id, task=task, result=result,
                                status=status, tokens_used=tokens_used, cost=cost,
-                               execution_time_seconds=execution_time_seconds, source=source)
+                               execution_time_seconds=execution_time_seconds, source=source,
+                               node_outputs=node_outputs or {})
     db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def create_execution_queued(db: Session, *, workflow_id: Optional[UUID], task: str,
+                             source: str = "ui") -> WorkflowExecutionORM:
+    row = WorkflowExecutionORM(workflow_id=workflow_id, task=task, result="",
+                               status="queued", source=source, node_outputs={})
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def update_execution(db: Session, execution_id: UUID, *, status: str, result: str = "",
+                     tokens_used: int = 0, cost: float = 0.0,
+                     execution_time_seconds: float = 0.0,
+                     node_outputs: Optional[Dict[str, Any]] = None) -> Optional[WorkflowExecutionORM]:
+    row = db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.id == execution_id).first()
+    if row is None:
+        return None
+    row.status = status
+    row.result = result
+    row.tokens_used = tokens_used
+    row.cost = cost
+    row.execution_time_seconds = execution_time_seconds
+    if node_outputs is not None:
+        row.node_outputs = node_outputs
+    db.commit()
+    db.refresh(row)
     return row
 
 
@@ -340,6 +418,196 @@ def delete_tool(db: Session, tool_id: UUID) -> bool:
 
 def delete_workflow(db: Session, workflow_id: UUID) -> bool:
     row = db.query(WorkflowORM).filter(WorkflowORM.id == workflow_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Workflow schedules ────────────────────────────────────────────────────────
+
+def create_schedule(db: Session, *, workflow_id: UUID, task: str,
+                    cron_expression: Optional[str] = None,
+                    interval_minutes: Optional[int] = None) -> WorkflowScheduleORM:
+    row = WorkflowScheduleORM(workflow_id=workflow_id, task=task,
+                               cron_expression=cron_expression,
+                               interval_minutes=interval_minutes)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def get_schedule(db: Session, schedule_id: UUID) -> Optional[WorkflowScheduleORM]:
+    return db.query(WorkflowScheduleORM).filter(WorkflowScheduleORM.id == schedule_id).first()
+
+
+def list_schedules_for_workflow(db: Session, workflow_id: UUID) -> List[WorkflowScheduleORM]:
+    return (db.query(WorkflowScheduleORM)
+            .filter(WorkflowScheduleORM.workflow_id == workflow_id)
+            .order_by(WorkflowScheduleORM.created_at.asc()).all())
+
+
+def list_all_enabled_schedules(db: Session) -> List[WorkflowScheduleORM]:
+    return (db.query(WorkflowScheduleORM)
+            .filter(WorkflowScheduleORM.enabled.is_(True)).all())
+
+
+def update_schedule(db: Session, schedule_id: UUID, **kwargs) -> Optional[WorkflowScheduleORM]:
+    row = db.query(WorkflowScheduleORM).filter(WorkflowScheduleORM.id == schedule_id).first()
+    if row is None:
+        return None
+    for key, value in kwargs.items():
+        setattr(row, key, value)
+    db.commit(); db.refresh(row)
+    return row
+
+
+def delete_schedule(db: Session, schedule_id: UUID) -> bool:
+    row = db.query(WorkflowScheduleORM).filter(WorkflowScheduleORM.id == schedule_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Workflow channel integrations ─────────────────────────────────────────────
+
+def create_integration(db: Session, *, workflow_id: UUID, channel_type: str,
+                       config: dict) -> WorkflowIntegrationORM:
+    row = WorkflowIntegrationORM(workflow_id=workflow_id, channel_type=channel_type, config=config)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def get_integration(db: Session, integration_id: UUID) -> Optional[WorkflowIntegrationORM]:
+    return db.query(WorkflowIntegrationORM).filter(WorkflowIntegrationORM.id == integration_id).first()
+
+
+def list_integrations_for_workflow(db: Session, workflow_id: UUID) -> List[WorkflowIntegrationORM]:
+    return (db.query(WorkflowIntegrationORM)
+            .filter(WorkflowIntegrationORM.workflow_id == workflow_id)
+            .order_by(WorkflowIntegrationORM.created_at.asc()).all())
+
+
+def list_enabled_integrations_for_workflow(db: Session, workflow_id: UUID) -> List[WorkflowIntegrationORM]:
+    return (db.query(WorkflowIntegrationORM)
+            .filter(WorkflowIntegrationORM.workflow_id == workflow_id,
+                    WorkflowIntegrationORM.enabled.is_(True)).all())
+
+
+def find_slack_integration_by_channel(db: Session, channel_id: str) -> Optional[WorkflowIntegrationORM]:
+    """Find the first enabled Slack integration whose config contains the given channel_id."""
+    rows = (db.query(WorkflowIntegrationORM)
+              .filter(WorkflowIntegrationORM.channel_type == "slack",
+                      WorkflowIntegrationORM.enabled.is_(True)).all())
+    for row in rows:
+        if (row.config or {}).get("channel_id") == channel_id:
+            return row
+    return None
+
+
+# ── Channel bots ──────────────────────────────────────────────────────────────
+
+def create_bot(db: Session, *, name: str, channel_type: str, config: dict) -> ChannelBotORM:
+    row = ChannelBotORM(name=name, channel_type=channel_type, config=config)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def get_bot_by_id(db: Session, bot_id: UUID) -> Optional[ChannelBotORM]:
+    return db.query(ChannelBotORM).filter(ChannelBotORM.id == bot_id).first()
+
+
+def list_bots(db: Session) -> List[ChannelBotORM]:
+    return db.query(ChannelBotORM).order_by(ChannelBotORM.created_at.asc()).all()
+
+
+def update_bot(db: Session, bot_id: UUID, **kwargs) -> Optional[ChannelBotORM]:
+    row = db.query(ChannelBotORM).filter(ChannelBotORM.id == bot_id).first()
+    if row is None:
+        return None
+    for k, v in kwargs.items():
+        setattr(row, k, v)
+    db.commit(); db.refresh(row)
+    return row
+
+
+def delete_bot(db: Session, bot_id: UUID) -> bool:
+    row = db.query(ChannelBotORM).filter(ChannelBotORM.id == bot_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Slack channel mappings ────────────────────────────────────────────────────
+
+def create_slack_mapping(db: Session, *, bot_id: UUID, channel_id: str,
+                         workflow_id: UUID, channel_name: Optional[str] = None) -> SlackChannelMappingORM:
+    row = SlackChannelMappingORM(bot_id=bot_id, channel_id=channel_id,
+                                  workflow_id=workflow_id, channel_name=channel_name)
+    db.add(row); db.commit(); db.refresh(row)
+    return row
+
+
+def list_slack_mappings_for_bot(db: Session, bot_id: UUID) -> List[SlackChannelMappingORM]:
+    return (db.query(SlackChannelMappingORM)
+              .filter(SlackChannelMappingORM.bot_id == bot_id)
+              .order_by(SlackChannelMappingORM.created_at.asc()).all())
+
+
+def find_slack_mapping_by_channel(db: Session, channel_id: str) -> Optional[SlackChannelMappingORM]:
+    """Return the first Slack mapping for a channel_id (across all enabled bots)."""
+    return (db.query(SlackChannelMappingORM)
+              .join(ChannelBotORM, SlackChannelMappingORM.bot_id == ChannelBotORM.id)
+              .filter(SlackChannelMappingORM.channel_id == channel_id,
+                      ChannelBotORM.enabled.is_(True))
+              .first())
+
+
+def delete_slack_mapping(db: Session, mapping_id: UUID) -> bool:
+    row = db.query(SlackChannelMappingORM).filter(SlackChannelMappingORM.id == mapping_id).first()
+    if row is None:
+        return False
+    db.delete(row); db.commit()
+    return True
+
+
+# ── Telegram mappings scoped to a bot ─────────────────────────────────────────
+
+def list_telegram_mappings_for_bot(db: Session, bot_id: UUID) -> List[TelegramChatMappingORM]:
+    return (db.query(TelegramChatMappingORM)
+              .filter(TelegramChatMappingORM.bot_id == bot_id)
+              .order_by(TelegramChatMappingORM.created_at.asc()).all())
+
+
+def set_chat_mapping_for_bot(db: Session, *, chat_id: str, workflow_id: UUID,
+                              bot_id: UUID, username: Optional[str] = None) -> TelegramChatMappingORM:
+    existing = db.query(TelegramChatMappingORM).filter(
+        TelegramChatMappingORM.chat_id == chat_id).first()
+    if existing:
+        existing.workflow_id = workflow_id
+        existing.bot_id = bot_id
+        existing.username = username
+    else:
+        existing = TelegramChatMappingORM(chat_id=chat_id, workflow_id=workflow_id,
+                                           bot_id=bot_id, username=username)
+        db.add(existing)
+    db.commit(); db.refresh(existing)
+    return existing
+
+
+def update_integration(db: Session, integration_id: UUID, **kwargs) -> Optional[WorkflowIntegrationORM]:
+    row = db.query(WorkflowIntegrationORM).filter(WorkflowIntegrationORM.id == integration_id).first()
+    if row is None:
+        return None
+    for key, value in kwargs.items():
+        setattr(row, key, value)
+    db.commit(); db.refresh(row)
+    return row
+
+
+def delete_integration(db: Session, integration_id: UUID) -> bool:
+    row = db.query(WorkflowIntegrationORM).filter(WorkflowIntegrationORM.id == integration_id).first()
     if row is None:
         return False
     db.delete(row); db.commit()

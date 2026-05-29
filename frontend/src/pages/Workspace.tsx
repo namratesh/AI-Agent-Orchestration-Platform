@@ -6,7 +6,7 @@ import ReactFlow, {
   ConnectionMode, MarkerType,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   Bot, Wrench, Save, X, Network, RefreshCw, Plus, ExternalLink, Pencil,
 } from 'lucide-react'
@@ -36,6 +36,47 @@ interface EdgePopupState {
   x: number
   y: number
   condition: EdgeCondition | null
+}
+
+// ─── UUID validator ───────────────────────────────────────────────────────────
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const isValidUUID = (s: string) => UUID_RE.test(s)
+
+// ─── Workflow templates ───────────────────────────────────────────────────────
+const WORKFLOW_TEMPLATES: Record<string, { name: string; nodes: Node[]; edges: Edge[] }> = {
+  'research-summarize': {
+    name: 'Research & Summarize',
+    nodes: [
+      { id: 'agentNode-tmpl-1', type: 'agentNode', position: { x: 150, y: 200 },
+        data: { name: 'Research Agent', role: 'researcher', model: '', provider: '' } },
+      { id: 'agentNode-tmpl-2', type: 'agentNode', position: { x: 500, y: 200 },
+        data: { name: 'Summarizer Agent', role: 'writer', model: '', provider: '' } },
+    ],
+    edges: [
+      { id: 'tmpl-edge-1', source: 'agentNode-tmpl-1', target: 'agentNode-tmpl-2',
+        animated: true, style: { stroke: '#6366f1', strokeWidth: 2 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#6366f1', width: 18, height: 18 } },
+    ],
+  },
+  'content-pipeline': {
+    name: 'Content Pipeline',
+    nodes: [
+      { id: 'agentNode-tmpl-1', type: 'agentNode', position: { x: 80,  y: 200 },
+        data: { name: 'Data Collector', role: 'researcher', model: '', provider: '' } },
+      { id: 'agentNode-tmpl-2', type: 'agentNode', position: { x: 380, y: 200 },
+        data: { name: 'Analyzer Agent', role: 'analyzer', model: '', provider: '' } },
+      { id: 'agentNode-tmpl-3', type: 'agentNode', position: { x: 680, y: 200 },
+        data: { name: 'Report Writer', role: 'writer', model: '', provider: '' } },
+    ],
+    edges: [
+      { id: 'tmpl-edge-1', source: 'agentNode-tmpl-1', target: 'agentNode-tmpl-2',
+        animated: true, style: { stroke: '#6366f1', strokeWidth: 2 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#6366f1', width: 18, height: 18 } },
+      { id: 'tmpl-edge-2', source: 'agentNode-tmpl-2', target: 'agentNode-tmpl-3',
+        animated: true, style: { stroke: '#6366f1', strokeWidth: 2 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#6366f1', width: 18, height: 18 } },
+    ],
+  },
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -576,15 +617,20 @@ function CanvasInner({
 
 // ─── Workspace (root) ─────────────────────────────────────────────────────────
 export default function Workspace() {
+  const [searchParams] = useSearchParams()
+  const templateParam  = searchParams.get('template')
+
   const [agents, setAgents]         = useState<Agent[]>([])
   const [tools, setTools]           = useState<Tool[]>([])
   const [agentsLoading, setAgentsLoading] = useState(false)
   const [toolsLoading, setToolsLoading]   = useState(false)
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const templateDef = templateParam ? WORKFLOW_TEMPLATES[templateParam] : null
 
-  const [workflowName, setWorkflowName] = useState('My Workflow')
+  const [nodes, setNodes, onNodesChange] = useNodesState(templateDef?.nodes ?? [])
+  const [edges, setEdges, onEdgesChange] = useEdgesState(templateDef?.edges ?? [])
+
+  const [workflowName, setWorkflowName] = useState(templateDef?.name ?? 'My Workflow')
   const [isSaving, setIsSaving]         = useState(false)
 
   const fetchAgents = useCallback(() => {
@@ -621,7 +667,9 @@ export default function Workspace() {
             return {
               id:       n.id,
               type:     n.type === 'agentNode' ? 'AGENT' as const : 'TOOL' as const,
-              ...(n.type === 'agentNode' ? { agent_id: rawId } : { tool_id: rawId }),
+              // Only include agent_id/tool_id when rawId is a real UUID (not a template placeholder)
+              ...(n.type === 'agentNode' && isValidUUID(rawId) ? { agent_id: rawId } : {}),
+              ...(n.type === 'toolNode'  && isValidUUID(rawId) ? { tool_id:  rawId } : {}),
               config:   {},
             }
           }),
