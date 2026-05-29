@@ -87,9 +87,9 @@ graph TD
     subgraph BACK["backend — FastAPI :8000"]
         MW["Middleware\nTrace ID header · API key auth"]
 
-        subgraph ROUTERS["Routers — 9 total"]
-            CRUD_R["CRUD\n/agents /workflows /tools\n/executions /schedules /stats"]
-            HOOK_R["Webhooks  no auth\n/telegram/webhook\n/slack/events"]
+        subgraph ROUTERS["Routers — 10 total"]
+            CRUD_R["CRUD\n/agents /workflows /tools\n/executions /schedules /stats /bots /seed"]
+            HOOK_R["Webhooks  no auth\n/telegram/webhook/{bot_id}\n/slack/events"]
             WS_R["WebSocket  no auth\n/ws/executions/:id\n/ws/logs"]
         end
 
@@ -262,8 +262,8 @@ graph LR
         EX_EP["GET DELETE /executions"]
         SCHED_EP["GET POST PUT DELETE /schedules"]
         WS_EP2["WS /ws/executions/:id"]
-        TG_EP["CRUD /telegram/mappings"]
-        SL_EP["CRUD /slack/mappings"]
+        BOT_EP["CRUD /bots\n/bots/:id/telegram-mappings\n/bots/:id/slack-mappings"]
+        SEED_EP["POST /seed"]
     end
 
     DASH    --> STATS_EP
@@ -276,14 +276,14 @@ graph LR
     WORK_P  --> TL_EP
     WORK_P  --> WF_EP
     WFB_P   --> WF_EP
+    WFB_P   --> AG_EP
     WFB_P   --> WF_RUN
     WFB_P   --> SCHED_EP
     WFB_P   --> WS_EP2
     EXEC_P  --> WF_RUN
     EXEC_P  --> WS_EP2
     HIST_P  --> EX_EP
-    SET_P   --> TG_EP
-    SET_P   --> SL_EP
+    SET_P   --> BOT_EP
 ```
 
 ---
@@ -433,16 +433,25 @@ erDiagram
         boolean enabled
         timestamp last_run_at
     }
+    channel_bots {
+        uuid    id           PK
+        string  name
+        string  channel_type
+        jsonb   config
+        boolean enabled
+    }
     telegram_chat_mappings {
         uuid    id           PK
         string  chat_id
         uuid    workflow_id  FK
+        uuid    bot_id       FK
         string  username
     }
     slack_channel_mappings {
         uuid    id           PK
         string  channel_id
         uuid    workflow_id  FK
+        uuid    bot_id       FK
     }
 
     agents              ||--o{ messages                        : "sends / receives"
@@ -452,6 +461,8 @@ erDiagram
     workflows           ||--o{ telegram_chat_mappings          : "mapped to"
     workflows           ||--o{ slack_channel_mappings          : "mapped to"
     workflow_executions ||--o{ workflow_execution_checkpoints  : "has many"
+    channel_bots        ||--o{ telegram_chat_mappings          : "owns"
+    channel_bots        ||--o{ slack_channel_mappings          : "owns"
 ```
 
 ---

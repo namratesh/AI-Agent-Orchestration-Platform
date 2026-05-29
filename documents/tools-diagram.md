@@ -19,8 +19,9 @@ graph TB
 
     subgraph TRIG_T["Trigger Integrations  how workflows start"]
         MANUAL_T["Manual UI\nPOST /workflows/:id/execute"]
-        TG_T["Telegram Bot\nwebhook → workflow"]
-        SL_T["Slack Events\nwebhook → workflow"]
+        TPL_T["Templates UI\nPOST /workflows (immediate save)"]
+        TG_T["Telegram Named Bot\n/telegram/webhook/{bot_id}"]
+        SL_T["Slack Named Bot\n/slack/events"]
         SCHED_T["APScheduler\ncron + interval"]
     end
 
@@ -171,24 +172,28 @@ graph LR
     CREATE_EX --> ENQUEUE --> WORKER2
 ```
 
-### 3b. Telegram Bot
+### 3b. Telegram Named Bot
+
+Credentials are stored in the `channel_bots` DB table, not env vars. Each bot gets its own webhook URL keyed by `bot_id`.
 
 ```mermaid
 graph TD
-    subgraph SETUP_TG["Setup"]
+    subgraph SETUP_TG["Setup — Settings UI"]
         BOT_F["@BotFather → bot token"]
-        SET_WH["curl setWebhook\nurl=host/telegram/webhook\nsecret_token=WEBHOOK_SECRET"]
-        MAP_TG["Settings UI\nmap chat_id → workflow_id"]
-        BOT_F --> SET_WH --> MAP_TG
+        CREATE_BOT["POST /bots\nchannel_type=telegram\nconfig.bot_token stored in DB"]
+        SET_WH["Register webhook with Telegram:\ncurl setWebhook\nurl=host/telegram/webhook/{bot_id}"]
+        MAP_TG["POST /bots/:id/telegram-mappings\nchat_id → workflow_id"]
+        BOT_F --> CREATE_BOT --> SET_WH --> MAP_TG
     end
 
     subgraph RECV_TG["Incoming message"]
-        TG_POST["POST /telegram/webhook\nX-Telegram-Bot-Api-Secret-Token"]
+        TG_POST["POST /telegram/webhook/{bot_id}\nX-Telegram-Bot-Api-Secret-Token"]
+        LOAD_BOT["load bot from DB by bot_id\ndecrypt bot_token"]
         VALID_TG{"token\nvalid?"}
         REJECT_TG["403 Forbidden"]
         PARSE_TG["extract chat_id + text"]
-        LOOKUP_TG["telegram_chat_mappings\nSELECT workflow_id WHERE chat_id=?"]
-        TG_POST --> VALID_TG
+        LOOKUP_TG["telegram_chat_mappings\nSELECT workflow_id\nWHERE chat_id=? AND bot_id=?"]
+        TG_POST --> LOAD_BOT --> VALID_TG
         VALID_TG -->|"no"| REJECT_TG
         VALID_TG -->|"yes"| PARSE_TG --> LOOKUP_TG
     end
@@ -196,33 +201,37 @@ graph TD
     subgraph RUN_TG["Execute + reply"]
         EXEC_TG["enqueue run_workflow"]
         RESP_TG["await result"]
-        REPLY_TG["POST api.telegram.org\n/sendMessage\nchat_id · text=result"]
+        REPLY_TG["POST api.telegram.org/bot{token}\n/sendMessage\nchat_id · text=result"]
         EXEC_TG --> RESP_TG --> REPLY_TG
     end
 
     SETUP_TG --> RECV_TG --> RUN_TG
 ```
 
-### 3c. Slack Events
+### 3c. Slack Named Bot
+
+All Slack bots share one events endpoint `/slack/events`. The signing secret is loaded per-bot from the DB and used for HMAC verification.
 
 ```mermaid
 graph TD
-    subgraph SETUP_SL["Setup"]
+    subgraph SETUP_SL["Setup — Settings UI"]
         APP_SL["Create Slack app\napi.slack.com/apps"]
-        SUB_SL["Event Subscriptions\nrequest URL = host/slack/events\nsubscribe: message.channels"]
-        ENV_SL["SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET in .env"]
-        APP_SL --> SUB_SL --> ENV_SL
+        CREATE_BOT_SL["POST /bots\nchannel_type=slack\nconfig.bot_token + signing_secret stored in DB"]
+        SUB_SL["Event Subscriptions URL:\nhost/slack/events\nsubscribe: message.channels"]
+        MAP_SL["POST /bots/:id/slack-mappings\nchannel_id → workflow_id"]
+        APP_SL --> CREATE_BOT_SL --> SUB_SL --> MAP_SL
     end
 
     subgraph RECV_SL["Incoming event"]
         SL_POST["POST /slack/events\nX-Slack-Signature header"]
+        FIND_BOT["find matching bot by channel_id\nload signing_secret from DB"]
         VALID_SL{"HMAC-SHA256\nsignature valid?"}
         REJECT_SL["403 Forbidden"]
         URL_VER{"url_verification\nchallenge?"}
         ECHO["echo challenge → 200\nSlack confirms endpoint"]
         PARSE_SL["extract channel_id + text"]
         LOOKUP_SL["slack_channel_mappings\nSELECT workflow_id WHERE channel_id=?"]
-        SL_POST --> VALID_SL
+        SL_POST --> FIND_BOT --> VALID_SL
         VALID_SL -->|"no"| REJECT_SL
         VALID_SL -->|"yes"| URL_VER
         URL_VER -->|"yes"| ECHO
@@ -232,7 +241,7 @@ graph TD
     subgraph RUN_SL["Execute + reply"]
         EXEC_SL["enqueue run_workflow"]
         RESP_SL["await result"]
-        REPLY_SL["POST slack.com/api\n/chat.postMessage\nchannel · text=result\nBearer SLACK_BOT_TOKEN"]
+        REPLY_SL["POST slack.com/api/chat.postMessage\nchannel · text=result\nBearer bot_token from DB"]
         EXEC_SL --> RESP_SL --> REPLY_SL
     end
 
@@ -271,6 +280,31 @@ graph TD
     BOOT --> LOAD_SCHED --> FIRE
     LIVE --> LOAD_SCHED
 ```
+
+### 3e. Workflow Templates
+
+Templates are defined in the frontend (`WORKFLOW_TEMPLATES` constant in `WorkflowBuilder.tsx`). Clicking **Use Template** resolves agent names against the DB and immediately calls `POST /workflows` — no canvas step required.
+
+```mermaid
+graph TD
+    subgraph TPL["Templates modal — /workflows page"]
+        CHIPS["render agent chips\nindigo = matched · amber = missing"]
+        CLICK["Use Template clicked"]
+        RESOLVE["match each slot to a real agent\nby name substring (case-insensitive)"]
+        UNMATCH{"all agents\nfound?"}
+        ERR_T["toast error:\nlist missing agents"]
+        SAVE["POST /workflows\nnodes with real agent_ids\nstart_node_id = first slot"]
+        APPEAR["workflow appears in list\nselected and ready to run"]
+        CHIPS --> CLICK --> RESOLVE --> UNMATCH
+        UNMATCH -->|"no"| ERR_T
+        UNMATCH -->|"yes"| SAVE --> APPEAR
+    end
+```
+
+| Template | Agents required |
+|---|---|
+| Research & Write | Research Agent → Writer Agent |
+| Content Pipeline | Research Agent → Analyzer Agent → Writer Agent |
 
 ---
 

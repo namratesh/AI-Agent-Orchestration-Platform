@@ -41,7 +41,7 @@ A full-stack platform for creating, configuring, and connecting AI agents into c
 | Real-time streaming | WebSocket `/ws/executions/{id}` pushes `node_complete` events as each node finishes and a `done` event when the workflow ends |
 | Parallel node support | `WorkflowState` uses Annotated reducers so parallel branches can merge state without conflicts |
 | Workflow schedules | Run workflows automatically on a cron expression or interval trigger via APScheduler |
-| Pre-built templates | "Research & Summarize" and "Content Pipeline" to start fast |
+| Pre-built templates | "Research & Write" and "Content Pipeline" to start fast |
 | Inter-agent message trace | Inspect each node's output in the Execution History detail modal |
 | Web search | Agents with Tavily search retrieve live context — the LLM decides when to search and may search multiple times per task |
 | HTTP tool nodes | Call any external API inline in a workflow with `{{input}}` templating |
@@ -288,8 +288,8 @@ Click **Templates** on the Workflows page (`/workflows`):
 
 | Template | Structure |
 |---|---|
-| Research & Summarize | Research Agent → Summarizer Agent (2 nodes, 1 edge) |
-| Content Pipeline | Data Collector → Analyzer Agent → Report Writer (3 nodes, 2 edges) |
+| Research & Write | Research Agent → Writer Agent (2 nodes, 1 edge) |
+| Content Pipeline | Research Agent → Analyzer Agent → Writer Agent (3 nodes, 2 edges) |
 
 "Use Template" opens the Workspace with pre-placed placeholder nodes. Drag real agents onto the canvas, then save.
 

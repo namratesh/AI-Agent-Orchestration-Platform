@@ -68,7 +68,7 @@ ELAPSED=0
 STATUS="queued"
 
 while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
-  RESULT=$(curl -sf "$BASE/workflows/$WORKFLOW_ID/executions/$EXEC_ID" 2>/dev/null || echo '{"status":"queued"}')
+  RESULT=$(curl -sf "$BASE/executions/$EXEC_ID" 2>/dev/null || echo '{"status":"queued"}')
   STATUS=$(echo "$RESULT" | python3 -c "import sys, json; print(json.load(sys.stdin).get('status','queued'))")
   echo "   [$ELAPSED s] status: $STATUS"
   if [ "$STATUS" = "success" ] || [ "$STATUS" = "error" ]; then
