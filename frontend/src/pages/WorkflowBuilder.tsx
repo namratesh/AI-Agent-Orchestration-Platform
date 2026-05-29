@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   GitBranch, Plus, Play, Bot, Wrench, Clock,
@@ -12,7 +12,7 @@ import clsx from 'clsx'
 import {
   listWorkflows, executeWorkflow, deleteWorkflow,
   listSchedules, createSchedule, updateScheduleApi, deleteScheduleApi,
-  listAgents, getExecution,
+  listAgents,
 } from '../api'
 import type { Workflow, WorkflowSchedule, Agent, ExecutionRecord } from '../types'
 import { PageSpinner } from '../components/LoadingSpinner'
@@ -179,51 +179,89 @@ function ScheduleModal({ workflow, onClose }: { workflow: Workflow; onClose: () 
 // ─── Execution panel ──────────────────────────────────────────────────────────
 type RunStatus = 'idle' | 'queued' | 'running' | 'success' | 'error'
 
+// Build the WebSocket URL for execution streaming (same host, /ws/ path).
+function executionWsUrl(executionId: string): string {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}/ws/executions/${executionId}`
+}
+
 function ExecutionPanel({ workflow, agentMap }: { workflow: Workflow; agentMap: Map<string, string> }) {
   const [task, setTask]           = useState('')
   const [runStatus, setRunStatus] = useState<RunStatus>('idle')
-  const [execId, setExecId]       = useState<string | null>(null)
   const [liveRec, setLiveRec]     = useState<ExecutionRecord | null>(null)
   const [error, setError]         = useState<string | null>(null)
   const [copied, setCopied]       = useState(false)
-  const pollRef                   = useRef<ReturnType<typeof setInterval> | null>(null)
+  const wsRef                     = useRef<WebSocket | null>(null)
   const orderedNodes              = getOrderedNodes(workflow.definition)
 
-  // Reset when workflow changes
+  // Clean up WebSocket when workflow changes or component unmounts.
   useEffect(() => {
-    if (pollRef.current) clearInterval(pollRef.current)
-    setTask(''); setRunStatus('idle'); setExecId(null); setLiveRec(null); setError(null)
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+    return () => { wsRef.current?.close(); wsRef.current = null }
   }, [workflow.id])
 
   const run = async () => {
     if (!task.trim()) { toast.error('Enter a task'); return }
-    if (pollRef.current) clearInterval(pollRef.current)
+    wsRef.current?.close()
     setRunStatus('queued'); setLiveRec(null); setError(null)
 
     try {
       const resp = await executeWorkflow(workflow.id, task.trim())
       const id = resp.execution_id
       if (!id) throw new Error('No execution ID')
-      setExecId(id); setRunStatus('running')
+      setRunStatus('running')
 
-      let attempts = 0
-      pollRef.current = setInterval(async () => {
-        attempts++
+      // Open a WebSocket to receive real-time node events from the worker.
+      const ws = new WebSocket(executionWsUrl(id))
+      wsRef.current = ws
+
+      // Accumulate node outputs as events arrive.
+      const nodeOutputs: Record<string, string> = {}
+
+      ws.onmessage = (evt) => {
         try {
-          const rec = await getExecution(id)
-          setLiveRec(rec)
-          if (rec.status === 'success') {
-            clearInterval(pollRef.current!); setRunStatus('success'); toast.success('Done!')
-          } else if (rec.status === 'error') {
-            clearInterval(pollRef.current!); setRunStatus('error')
-            setError(rec.error_message || 'Execution failed')
-            toast.error('Execution failed')
-          } else if (attempts >= 120) {
-            clearInterval(pollRef.current!); setRunStatus('error'); setError('Timed out after 4 minutes')
+          const event = JSON.parse(evt.data as string)
+
+          if (event.type === 'node_complete') {
+            nodeOutputs[event.node_id] = event.output
+            // Merge into liveRec so the running panel re-renders per node.
+            setLiveRec(prev => ({
+              ...(prev ?? {} as ExecutionRecord),
+              node_outputs: { ...nodeOutputs },
+            } as ExecutionRecord))
           }
-        } catch { /* transient — keep polling */ }
-      }, 2000)
+
+          if (event.type === 'done') {
+            ws.close()
+            if (event.status === 'success') {
+              setLiveRec({
+                id,
+                workflow_id: workflow.id,
+                task,
+                status: 'success',
+                result: event.result ?? '',
+                node_outputs: event.node_outputs ?? nodeOutputs,
+                tokens_used: event.tokens_used ?? 0,
+                cost: event.cost ?? 0,
+                execution_time_seconds: event.elapsed ?? 0,
+                created_at: new Date().toISOString(),
+                error_message: undefined,
+                source: 'ui',
+              })
+              setRunStatus('success')
+              toast.success('Done!')
+            } else {
+              setError(event.error || 'Execution failed')
+              setRunStatus('error')
+              toast.error('Execution failed')
+            }
+          }
+        } catch { /* malformed frame — ignore */ }
+      }
+
+      ws.onerror = () => {
+        setError('Lost connection to execution stream')
+        setRunStatus('error')
+      }
     } catch (e) {
       setRunStatus('error')
       setError(e instanceof Error ? e.message : 'Failed to start')
@@ -232,7 +270,11 @@ function ExecutionPanel({ workflow, agentMap }: { workflow: Workflow; agentMap: 
   }
 
   const copy = () => {
-    if (liveRec?.result) { navigator.clipboard.writeText(liveRec.result); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+    if (liveRec?.result) {
+      navigator.clipboard.writeText(liveRec.result)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
   }
 
   const isRunning = runStatus === 'queued' || runStatus === 'running'

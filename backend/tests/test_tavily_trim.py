@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 
 def _call_web_search(query: str, api_key: str = "tvly-test"):
-    from services.executor import web_search
+    from services.executor import _do_web_search as web_search
 
     mock_client = MagicMock()
     mock_client.search.return_value = {
@@ -45,7 +45,7 @@ def test_short_query_passed_unchanged():
 
 def test_missing_api_key_returns_config_message():
     """No Tavily key → return a user-friendly message, never raise."""
-    from services.executor import web_search
+    from services.executor import _do_web_search as web_search
 
     with patch("services.executor.settings") as mock_settings:
         mock_settings.TAVILY_API_KEY = None
@@ -57,7 +57,7 @@ def test_missing_api_key_returns_config_message():
 
 def test_tavily_exception_returns_error_string():
     """Tavily 4xx/5xx errors must be caught and returned as a string."""
-    from services.executor import web_search
+    from services.executor import _do_web_search as web_search
 
     mock_client = MagicMock()
     mock_client.search.side_effect = Exception("status 400")

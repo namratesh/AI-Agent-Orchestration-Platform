@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 
-from api import agents, bots, executions, integrations, logs, schedules, seed, slack, stats, telegram, tools, workflows
+from api import agents, bots, execution_stream, executions, integrations, logs, schedules, seed, slack, stats, telegram, tools, workflows
 from core.auth import require_api_key
 from core.config import settings
 from core.logging_config import get_logger, setup_logging
@@ -35,7 +35,8 @@ app.mount("/metrics", make_asgi_app())
 # Webhooks and WebSocket endpoints cannot carry Authorization headers — no API key.
 app.include_router(slack.router)
 app.include_router(telegram.router)
-app.include_router(logs.router)   # /ws/logs — browsers can't set headers on WS upgrades
+app.include_router(logs.router)              # /ws/logs — live structured log stream
+app.include_router(execution_stream.router)  # /ws/executions/{id} — per-execution stream
 
 # All UI-facing routers require a valid API key when API_SECRET_KEY is set.
 app.include_router(agents.router,       dependencies=_auth)

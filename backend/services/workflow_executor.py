@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import time
 import requests as http_requests
-from typing import Any, Dict, List, Optional, TypedDict
+from operator import add
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
 from uuid import UUID
 
 from langgraph.graph import END, StateGraph
@@ -21,6 +22,7 @@ from db.db import (SessionLocal, get_agent, get_tool, get_workflow,
                    patch_execution_progress, save_checkpoint, save_execution, update_execution)
 from instrumentation import record_workflow_execution
 from services.executor import agent_executor
+from services import stream_publisher
 
 logger = get_logger(__name__)
 _tracer = otel_trace.get_tracer(__name__)
@@ -29,11 +31,12 @@ _tracer = otel_trace.get_tracer(__name__)
 # ── Shared state that flows through every node in the graph ───────────────────
 
 class WorkflowState(TypedDict):
-    task: str                    # original user task — never mutated
-    current_output: str          # output of the most-recent node; next node's input
-    node_outputs: Dict[str, str] # accumulated per-node results
-    tokens_used: int             # running total across all agent nodes
-    cost: float                  # running total
+    task: str
+    current_output: str
+    # Annotated reducers allow parallel branches to merge state without conflicts.
+    node_outputs: Annotated[Dict[str, str], lambda a, b: {**a, **b}]
+    tokens_used: Annotated[int, add]
+    cost: Annotated[float, add]
 
 
 # ── Edge condition evaluator ──────────────────────────────────────────────────
@@ -73,6 +76,15 @@ def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str,
                 patch_execution_progress(db, execution_id, {node_id: outcome["result"]})
         finally:
             db.close()
+
+        # Push real-time event so WebSocket subscribers see the output immediately.
+        if execution_id:
+            stream_publisher.publish(str(execution_id), {
+                "type":    "node_complete",
+                "node_id": node_id,
+                "output":  outcome["result"],
+                "tokens":  outcome["tokens_used"],
+            })
 
         log.info("agent_node_done", tokens=outcome["tokens_used"], cost=outcome["cost"],
                  output_preview=outcome["result"][:120])
@@ -116,6 +128,11 @@ def _make_tool_node(node_id: str, tool, trace_id: str, execution_id: Optional[UU
                 patch_execution_progress(db, execution_id, {node_id: result})
             finally:
                 db.close()
+            stream_publisher.publish(str(execution_id), {
+                "type":    "node_complete",
+                "node_id": node_id,
+                "output":  result,
+            })
 
         return {
             "current_output": result,
@@ -343,6 +360,18 @@ class WorkflowExecutor:
                      result_preview=result[:120],
                      node_outputs_count=len(node_outputs))
 
+            # Signal WebSocket subscribers that the execution is finished.
+            if existing_execution_id:
+                stream_publisher.publish(str(existing_execution_id), {
+                    "type":        "done",
+                    "status":      "success",
+                    "result":      result,
+                    "node_outputs": node_outputs,
+                    "tokens_used": tokens,
+                    "cost":        cost,
+                    "elapsed":     round(elapsed, 3),
+                })
+
             record_workflow_execution(status="success")
 
             return {
@@ -372,6 +401,13 @@ class WorkflowExecutor:
                     execution_time_seconds=elapsed, source=source,
                     error_message=err_msg,
                 )
+            if existing_execution_id:
+                stream_publisher.publish(str(existing_execution_id), {
+                    "type":   "done",
+                    "status": "error",
+                    "error":  err_msg,
+                })
+
             record_workflow_execution(status="error")
             log.error("workflow_failed", error=err_msg)
             raise
