@@ -1,3 +1,13 @@
+"""
+Demo data seed API endpoint.
+
+Exposes the database seed function over HTTP so the frontend can trigger it
+without requiring direct database access.  Useful for resetting a demo
+environment or populating a fresh deployment from the UI.
+
+The underlying seed function is idempotent — it only inserts data when no
+agents exist, so calling this endpoint multiple times is safe.
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends

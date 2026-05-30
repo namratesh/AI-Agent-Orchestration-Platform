@@ -1,8 +1,19 @@
 """
-WebSocket endpoint: /ws/executions/{execution_id}
+Per-execution real-time streaming WebSocket endpoint.
 
-Streams real-time workflow execution events to connected clients.
-Events are published by the RQ worker via Redis pub/sub and forwarded here.
+Clients connect to ``/ws/executions/{execution_id}`` to receive live events as
+a workflow executes.  Events are published by the RQ worker via Redis pub/sub
+and forwarded here.
+
+Connection lifecycle:
+  1. Client connects; the endpoint validates the execution ID.
+  2. If the execution is already finished, the stored result is sent and the
+     connection is closed immediately.
+  3. Otherwise, the endpoint subscribes to the Redis channel for the execution
+     and forwards events as they arrive.
+  4. When a ``done`` event is received (or the 600-second timeout elapses),
+     a final DB read ensures the client receives the definitive result even if
+     a Redis message was missed.
 
 Event shapes:
   {"type": "node_complete", "node_id": "...", "output": "...", "tokens": N}
@@ -23,9 +34,18 @@ router = APIRouter()
 
 @router.websocket("/ws/executions/{execution_id}")
 async def execution_stream_ws(websocket: WebSocket, execution_id: str):
+    """Stream real-time execution events for a single workflow run.
+
+    Subscribes to Redis before checking DB status to avoid the race where the
+    worker completes between our DB check and our subscribe call.  After
+    subscribing, DB is re-checked — if the execution is already done, the
+    stored result is served directly and the connection is closed.
+
+    Falls back to a final DB read if Redis was unavailable or timed out, so
+    clients always receive a terminal event even in degraded infrastructure.
+    """
     await websocket.accept()
 
-    # Validate the execution_id
     try:
         exec_uuid = UUID(execution_id)
     except ValueError:
@@ -33,9 +53,6 @@ async def execution_stream_ws(websocket: WebSocket, execution_id: str):
         await websocket.close()
         return
 
-    # Subscribe to Redis BEFORE checking DB status to avoid the race where
-    # the worker completes between our DB check and our subscribe.
-    # After subscribing, we re-check DB — if already done, serve from DB.
     try:
         db: Session = SessionLocal()
         try:

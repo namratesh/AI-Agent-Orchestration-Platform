@@ -1,9 +1,21 @@
-"""APScheduler-based workflow scheduler.
+"""
+APScheduler-based workflow scheduler.
 
-Loads all enabled workflow_schedules rows on startup, registers each as an
-APScheduler job (cron or interval), and fires them by creating a queued
-execution record + running the workflow executor in a thread — identical to
-the BackgroundTasks path used by the HTTP execute endpoint.
+Loads all enabled ``workflow_schedules`` rows on startup and registers each as
+an APScheduler job using either a cron trigger or an interval trigger.  When a
+job fires, it:
+  1. Creates a queued execution record in PostgreSQL.
+  2. Updates the schedule's ``last_run_at`` timestamp.
+  3. Invokes ``WorkflowExecutor.execute`` directly (no RQ dependency) so
+     schedules work even when Redis is unavailable.
+
+Jobs are registered with ``replace_existing=True`` so that calling
+``add_or_update_job`` is idempotent — the API layer calls it on every create
+and update without checking whether the job already exists.
+
+A ``misfire_grace_time`` of 60 seconds is set so that jobs missed during a
+brief restart or maintenance window are still executed if they fall within the
+grace period.
 """
 from __future__ import annotations
 
@@ -32,11 +44,23 @@ _executor = WorkflowExecutor()
 
 
 def _job_id(schedule_id: uuid.UUID) -> str:
+    """Return the APScheduler job ID for a given schedule UUID."""
     return f"schedule_{schedule_id}"
 
 
 def _run_schedule(schedule_id: str, workflow_id: str, task: str) -> None:
-    """Fired by APScheduler. Creates a queued execution and runs it."""
+    """APScheduler job entry point — creates an execution and runs the workflow.
+
+    Creates a queued execution record first so the execution is visible in the
+    UI immediately even if the workflow takes a long time.  The ``last_run_at``
+    timestamp is updated atomically with the execution creation so dashboards
+    reflect the most recent fire time accurately.
+
+    Args:
+        schedule_id: UUID string of the schedule row that triggered this run.
+        workflow_id: UUID string of the workflow to execute.
+        task: Task description passed to the workflow as the initial input.
+    """
     wf_uuid = uuid.UUID(workflow_id)
     sched_uuid = uuid.UUID(schedule_id)
     trace_id = str(uuid.uuid4())
@@ -52,7 +76,7 @@ def _run_schedule(schedule_id: str, workflow_id: str, task: str) -> None:
     finally:
         db.close()
 
-    # WorkflowExecutor.execute() manages its own DB session internally
+    # WorkflowExecutor.execute() manages its own DB session internally.
     try:
         _executor.execute(
             workflow_id=wf_uuid,
@@ -66,7 +90,16 @@ def _run_schedule(schedule_id: str, workflow_id: str, task: str) -> None:
 
 
 def _register(sched: BackgroundScheduler, row: WorkflowScheduleORM) -> None:
-    """Add or replace a single APScheduler job from a schedule row."""
+    """Add or replace a single APScheduler job from a schedule ORM row.
+
+    Skips registration silently if neither ``cron_expression`` nor
+    ``interval_minutes`` is set (invalid state that should be caught at the API
+    layer).
+
+    Args:
+        sched: The running BackgroundScheduler instance.
+        row: Schedule ORM row with trigger configuration.
+    """
     job_id = _job_id(row.id)
     kwargs = dict(
         func=_run_schedule,
@@ -86,6 +119,13 @@ def _register(sched: BackgroundScheduler, row: WorkflowScheduleORM) -> None:
 
 
 def start() -> None:
+    """Start the background scheduler and register all enabled schedule jobs.
+
+    Initialises a UTC-timezone BackgroundScheduler, loads all enabled schedules
+    from the database, and registers each as an APScheduler job.  Individual
+    registration failures are logged but do not prevent other schedules from
+    being registered.
+    """
     global _scheduler
     _scheduler = BackgroundScheduler(timezone="UTC")
 
@@ -105,6 +145,7 @@ def start() -> None:
 
 
 def stop() -> None:
+    """Shut down the background scheduler without waiting for running jobs."""
     global _scheduler
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
@@ -114,6 +155,19 @@ def stop() -> None:
 def add_or_update_job(schedule_id: uuid.UUID, workflow_id: uuid.UUID,
                       task: str, cron_expression: Optional[str] = None,
                       interval_minutes: Optional[int] = None) -> None:
+    """Register or replace a schedule job without a database lookup.
+
+    Called by the API layer after create/update operations so the scheduler
+    reflects changes immediately without requiring a restart.  A no-op if the
+    scheduler has not been started yet (e.g. during tests).
+
+    Args:
+        schedule_id: UUID of the schedule row.
+        workflow_id: UUID of the workflow to execute.
+        task: Task description for the scheduled run.
+        cron_expression: Cron string (e.g. ``"0 9 * * 1-5"``).
+        interval_minutes: Fixed interval in minutes.
+    """
     if _scheduler is None:
         return
     row = WorkflowScheduleORM()
@@ -126,6 +180,13 @@ def add_or_update_job(schedule_id: uuid.UUID, workflow_id: uuid.UUID,
 
 
 def remove_job(schedule_id: uuid.UUID) -> None:
+    """Remove a schedule job from the scheduler by schedule ID.
+
+    A no-op if the scheduler has not started or the job does not exist.
+
+    Args:
+        schedule_id: UUID of the schedule whose job should be removed.
+    """
     if _scheduler is None:
         return
     job_id = _job_id(schedule_id)

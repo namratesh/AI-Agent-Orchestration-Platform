@@ -1,3 +1,17 @@
+"""
+Telegram bot message handler.
+
+``TelegramBot`` is a thin wrapper around the Telegram Bot API that handles
+inbound webhook updates and sends reply messages.  It is instantiated per
+request with the bot's token so it works with multiple named bots.
+
+Message routing:
+  1. Extract the ``chat_id`` and message text from the update.
+  2. Look up the chat mapping in PostgreSQL to find the target workflow.
+  3. If ``bot_id`` is provided, verify the mapping belongs to this bot to
+     prevent cross-bot message routing when multiple bots share the same DB.
+  4. Execute the workflow and reply with the result.
+"""
 from __future__ import annotations
 import httpx
 from typing import Any, Dict, Optional
@@ -13,10 +27,26 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 
 class TelegramBot:
+    """Telegram Bot API client for sending messages and processing webhook updates.
+
+    Args:
+        token: Telegram bot token (``1234567890:ABC...``).
+    """
+
     def __init__(self, token: str) -> None:
         self.token = token
 
     def send_message(self, chat_id: str | int, text: str) -> None:
+        """Send a text message to a Telegram chat.
+
+        Truncates ``text`` to 4 096 characters (Telegram's per-message limit).
+        Errors are logged and swallowed so a send failure does not crash the
+        webhook handler.
+
+        Args:
+            chat_id: Telegram chat ID (integer or string).
+            text: Message text to send.
+        """
         url = TELEGRAM_API.format(token=self.token, method="sendMessage")
         try:
             resp = httpx.post(url, json={"chat_id": chat_id, "text": text[:4096]}, timeout=10)
@@ -27,6 +57,23 @@ class TelegramBot:
 
     def webhook(self, update: Dict[str, Any], trace_id: str,
                 bot_id: Optional[UUID] = None) -> None:
+        """Process a single Telegram webhook update.
+
+        Handles both ``message`` and ``edited_message`` update types.  Silent
+        no-ops for updates without text (e.g. photos, stickers, joins).
+
+        Routing:
+          - Looks up the chat mapping for the incoming ``chat_id``.
+          - If no mapping exists, replies with an informational message.
+          - If ``bot_id`` is set and the mapping belongs to a different bot,
+            replies with a warning to avoid routing to the wrong workflow.
+
+        Args:
+            update: Parsed Telegram update dict.
+            trace_id: Correlation ID for structured logging and OTel spans.
+            bot_id: UUID of the Named Bot that received this update, or None
+                for the legacy single-bot path.
+        """
         message = update.get("message") or update.get("edited_message")
         if not message:
             return
@@ -51,7 +98,8 @@ class TelegramBot:
                               "Ask your admin to add a mapping in the platform.")
             return
 
-        # If bot_id is set, only honour mappings belonging to this bot
+        # If bot_id is set, only honour mappings belonging to this bot to
+        # prevent cross-bot routing when multiple bots share chat IDs.
         if bot_id is not None and getattr(mapping, "bot_id", None) != bot_id:
             self.send_message(chat_id,
                               "This chat is mapped to a different bot. "

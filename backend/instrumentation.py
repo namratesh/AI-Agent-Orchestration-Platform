@@ -1,3 +1,19 @@
+"""
+OpenTelemetry and Prometheus instrumentation setup.
+
+Initialises two OTel signal pipelines:
+  - **Traces** → Jaeger via OTLP HTTP (port 4318).  Spans are batched and
+    exported asynchronously to minimise latency impact on request handling.
+  - **Metrics** → Prometheus default registry via PrometheusMetricReader.
+    The ``/metrics`` endpoint (mounted in main.py) scrapes this registry.
+
+Auto-instrumentation patches FastAPI, the ``requests`` library, and SQLAlchemy
+so that HTTP calls, DB queries, and route handlers all produce spans automatically.
+
+Helper functions ``record_agent_execution`` and ``record_workflow_execution``
+are called by service layer code to increment domain-specific counters after
+each execution, keeping instrumentation concerns out of business logic.
+"""
 from __future__ import annotations
 import os
 
@@ -15,7 +31,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 _SERVICE = "ai-agent-orchestration"
 
-# Instruments — None until setup_otel() runs
+# Metric instruments — None until setup_otel() runs.
 _agent_executions = None
 _agent_tokens = None
 _agent_cost = None
@@ -24,6 +40,15 @@ _workflow_executions = None
 
 
 def setup_otel(app, engine) -> None:
+    """Initialise OTel tracing, metrics, and auto-instrumentation.
+
+    Must be called once during application startup after the FastAPI ``app``
+    instance and SQLAlchemy ``engine`` are created.
+
+    Args:
+        app: The FastAPI application instance to instrument.
+        engine: The SQLAlchemy engine to instrument for DB span generation.
+    """
     global _agent_executions, _agent_tokens, _agent_cost, _agent_duration, _workflow_executions
 
     resource = Resource.create({SERVICE_NAME: _SERVICE})
@@ -58,13 +83,26 @@ def setup_otel(app, engine) -> None:
         "workflow_executions", description="Total workflow executions"
     )
 
-    # Auto-instrumentation
+    # Auto-instrumentation patches apply monkey-patches at import time.
     FastAPIInstrumentor.instrument_app(app)
     RequestsInstrumentor().instrument()
     SQLAlchemyInstrumentor().instrument(engine=engine)
 
 
-def record_agent_execution(*, provider: str, tokens: int, cost: float, duration: float, status: str = "success") -> None:
+def record_agent_execution(
+    *, provider: str, tokens: int, cost: float, duration: float, status: str = "success"
+) -> None:
+    """Increment agent execution metrics after each agent run.
+
+    Safe to call before ``setup_otel()`` — instruments are None-guarded.
+
+    Args:
+        provider: LLM provider name (e.g. ``"openai"``, ``"groq"``).
+        tokens: Total tokens consumed across all ReAct loop iterations.
+        cost: Estimated cost in USD.
+        duration: Wall-clock execution time in seconds.
+        status: ``"success"`` or ``"error"``.
+    """
     attrs = {"provider": provider, "status": status}
     if _agent_executions is not None:
         _agent_executions.add(1, attrs)
@@ -77,5 +115,10 @@ def record_agent_execution(*, provider: str, tokens: int, cost: float, duration:
 
 
 def record_workflow_execution(*, status: str = "success") -> None:
+    """Increment the workflow execution counter.
+
+    Args:
+        status: ``"success"`` or ``"error"``.
+    """
     if _workflow_executions is not None:
         _workflow_executions.add(1, {"status": status})

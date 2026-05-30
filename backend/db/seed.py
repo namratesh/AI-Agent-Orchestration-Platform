@@ -131,7 +131,7 @@ def run_seed(db: Session) -> Dict[str, Any]:
         },
     )
 
-    # ── 6. Content Pipeline workflow (3 nodes) ────────────────────────────────
+    # ── 6. Content Pipeline workflow (3 nodes) ───────────────────────────────
     pipeline = create_workflow(
         db,
         name="Content Pipeline",

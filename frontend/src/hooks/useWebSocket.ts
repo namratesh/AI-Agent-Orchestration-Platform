@@ -1,3 +1,20 @@
+/**
+ * React hook for managing a WebSocket connection with automatic reconnection.
+ *
+ * Establishes a WebSocket connection to `url` and calls `onMessage` for every
+ * JSON message received.  Automatically reconnects after a 3-second delay when
+ * the connection drops.  The connection is torn down when the component unmounts.
+ *
+ * The `onMessage` callback is stored in a ref so callers can use an inline
+ * function without causing the effect to re-run on every render.
+ *
+ * @param url - WebSocket URL (e.g. `"ws://localhost:8000/ws/logs"`).
+ * @param onMessage - Called with the parsed JSON payload of each incoming message.
+ * @param enabled - Set to `false` to prevent connecting (e.g. feature flags).
+ *
+ * @returns `{ status, reconnect, disconnect }` where `status` reflects the
+ *   current connection state and `reconnect`/`disconnect` allow manual control.
+ */
 import { useEffect, useRef, useState, useCallback } from 'react'
 
 type Status = 'connecting' | 'connected' | 'disconnected' | 'error'
@@ -6,6 +23,7 @@ export function useWebSocket(url: string, onMessage: (data: unknown) => void, en
   const [status, setStatus] = useState<Status>('disconnected')
   const wsRef    = useRef<WebSocket | null>(null)
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Ref so callers can pass inline functions without re-triggering the effect.
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
 
@@ -21,7 +39,6 @@ export function useWebSocket(url: string, onMessage: (data: unknown) => void, en
 
     ws.onclose = () => {
       setStatus('disconnected')
-      // Auto-reconnect after 3 s
       retryRef.current = setTimeout(connect, 3000)
     }
 
@@ -34,7 +51,9 @@ export function useWebSocket(url: string, onMessage: (data: unknown) => void, en
       try {
         const data = JSON.parse(evt.data as string)
         onMessageRef.current(data)
-      } catch {}
+      } catch {
+        // Non-JSON frames are silently ignored.
+      }
     }
   }, [url, enabled])
 

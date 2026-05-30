@@ -1,3 +1,17 @@
+"""
+AI Agent Orchestration Platform — FastAPI application entry point.
+
+Responsibilities:
+  - Assemble all API routers with optional Bearer-token auth.
+  - Mount Prometheus metrics endpoint (/metrics).
+  - Bootstrap structured logging, OpenTelemetry, APScheduler, and demo seed data
+    on startup.
+  - Inject a per-request X-Trace-ID header for distributed tracing correlation.
+
+Webhook/WebSocket routers (Slack, Telegram, /ws/*) are intentionally excluded
+from API-key enforcement because HTTP clients cannot attach Authorization headers
+to WebSocket upgrades, and Slack/Telegram authenticate via their own mechanisms.
+"""
 from __future__ import annotations
 import asyncio
 import uuid
@@ -16,7 +30,11 @@ from instrumentation import setup_otel
 from services import scheduler as svc_scheduler
 from services.log_broadcaster import log_broadcaster
 
-app = FastAPI(title="AI Agent Orchestration Platform")
+app = FastAPI(
+    title="AI Agent Orchestration Platform",
+    description="Multi-agent workflow orchestration with LangGraph, APScheduler, and real-time streaming.",
+    version="1.0.0",
+)
 logger = get_logger(__name__)
 
 app.add_middleware(
@@ -51,7 +69,12 @@ app.include_router(seed.router,         dependencies=_auth)
 
 
 @app.on_event("startup")
-async def startup():
+async def startup() -> None:
+    """Initialize all platform services on application startup.
+
+    Order matters: logging must be configured first so that all subsequent
+    service startup messages are captured and broadcast correctly.
+    """
     setup_logging()
     setup_otel(app=app, engine=engine)
     log_broadcaster.set_loop(asyncio.get_event_loop())
@@ -61,12 +84,19 @@ async def startup():
 
 
 @app.on_event("shutdown")
-async def shutdown():
+async def shutdown() -> None:
+    """Gracefully stop background services on application shutdown."""
     svc_scheduler.stop()
 
 
 @app.middleware("http")
-async def trace_id_middleware(request: Request, call_next):
+async def trace_id_middleware(request: Request, call_next) -> Response:
+    """Attach a unique trace ID to every request and expose it in the response.
+
+    The trace ID is stored on ``request.state.trace_id`` so that route handlers
+    and downstream services can include it in log entries and OTel spans for
+    end-to-end correlation across service boundaries.
+    """
     trace_id = str(uuid.uuid4())
     request.state.trace_id = trace_id
     response: Response = await call_next(request)

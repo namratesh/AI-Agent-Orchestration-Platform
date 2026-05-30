@@ -1,9 +1,18 @@
 """
-Agent executor — agent-first implementation using LangGraph's create_react_agent.
+Agent executor — single-agent execution using LangGraph's create_react_agent.
 
-Each agent is a proper ReAct graph: the LLM reasons, decides which tools to call,
-observes results, and loops until it has an answer.  This replaces the old
-one-shot tool_node → llm_node pipeline.
+Each agent runs as a proper ReAct graph: the LLM reasons, decides which tools
+to call, observes their outputs, and loops until it produces a final answer.
+This replaces the old one-shot tool_node → llm_node pipeline.
+
+Conversation history is loaded from PostgreSQL before each run (up to
+``memory_window * 2`` messages) and prepended to the message list so the agent
+maintains context across turns.  The history window is configurable per agent
+via the ``config.memory_window`` field.
+
+Token usage is summed across all LLM calls in the ReAct loop and an estimated
+cost is calculated using the ``COST_PER_1K`` table.  Usage data is persisted to
+the ``messages`` table for auditing and dashboard stats.
 """
 from __future__ import annotations
 import time
@@ -23,6 +32,8 @@ from instrumentation import record_agent_execution
 logger = get_logger(__name__)
 _tracer = otel_trace.get_tracer(__name__)
 
+# Approximate cost per 1 000 tokens in USD, keyed by provider.
+# These are rough estimates used for dashboard stats — not billing-grade figures.
 COST_PER_1K: Dict[str, float] = {
     "openai": 0.03,
     "openrouter": 0.002,
@@ -32,8 +43,21 @@ COST_PER_1K: Dict[str, float] = {
 
 
 class LLMFactory:
+    """Factory that returns a LangChain chat model for the requested provider."""
+
     @staticmethod
     def get_llm(model: str, provider: str, temperature: float = 0.7, max_tokens: int = 2048):
+        """Instantiate and return a LangChain chat model.
+
+        Args:
+            model: Provider-specific model identifier (e.g. ``"gpt-4-turbo"``).
+            provider: One of ``"openai"``, ``"openrouter"``, ``"groq"``, ``"ollama"``.
+            temperature: Sampling temperature; higher values produce more varied output.
+            max_tokens: Maximum tokens to generate per LLM call.
+
+        Raises:
+            ValueError: If ``provider`` is not recognised.
+        """
         if provider == "openai":
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(
@@ -77,11 +101,18 @@ class LLMFactory:
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 def _do_web_search(query: str) -> str:
-    """Core search logic — testable without the LangChain tool wrapper."""
+    """Execute a Tavily web search and return formatted results.
+
+    Trims the query to the first sentence or 400 characters because Tavily
+    rejects queries that are too long — a common issue when the upstream agent
+    passes its full output as the search query.
+
+    Returns a human-readable string of numbered results, or an error message
+    if TAVILY_API_KEY is not configured or the search fails.
+    """
     span = otel_trace.get_current_span()
     span.set_attribute("tool.name", "web_search")
 
-    # Trim to first sentence or 400 chars — Tavily rejects longer queries.
     trimmed = query.strip()
     for sep in (".\n", "\n", ". "):
         idx = trimmed.find(sep)
@@ -125,6 +156,7 @@ def web_search(query: str) -> str:
 # ── Agent builder ─────────────────────────────────────────────────────────────
 
 def _build_tools(tool_names: list) -> list:
+    """Return instantiated LangChain tools matching the agent's configured tool list."""
     available = {"web_search": web_search}
     return [available[t] for t in (tool_names or []) if t in available]
 
@@ -132,8 +164,32 @@ def _build_tools(tool_names: list) -> list:
 # ── Executor ──────────────────────────────────────────────────────────────────
 
 class AgentExecutor:
+    """Executes a single agent task using a LangGraph ReAct graph.
+
+    Manages the full lifecycle of an agent run:
+      - Load conversation history from PostgreSQL.
+      - Compile a LangGraph ReAct agent with the configured LLM and tools.
+      - Invoke the graph and extract the final AI message.
+      - Persist the interaction to the message history.
+      - Record OTel spans and Prometheus metrics.
+    """
+
     @_tracer.start_as_current_span("agent_execute")
     def execute(self, agent_id: UUID, task: str, trace_id: str) -> Dict[str, Any]:
+        """Run a task against the specified agent and return the result.
+
+        Args:
+            agent_id: UUID of the agent to execute.
+            task: Natural language task description or question.
+            trace_id: Correlation ID threaded through all spans and log entries.
+
+        Returns:
+            dict with keys ``result`` (str), ``tokens_used`` (int), ``cost`` (float).
+
+        Raises:
+            ValueError: If the agent is not found in the database.
+            Exception: Propagates any LLM or tool error after recording metrics.
+        """
         span = otel_trace.get_current_span()
         span.set_attribute("agent_id", str(agent_id))
         span.set_attribute("trace_id", trace_id)
@@ -163,7 +219,7 @@ class AgentExecutor:
                      max_iterations=max_iterations,
                      memory_type=memory_type, memory_window=memory_window)
 
-            # Load conversation history from PostgreSQL
+            # Load conversation history from PostgreSQL.
             if memory_type == "none":
                 history: List[BaseMessage] = []
                 log.info("agent_memory_disabled")
@@ -177,7 +233,7 @@ class AgentExecutor:
                 ]
                 log.info("agent_memory_loaded", turns=len(history))
 
-            # Build LangGraph ReAct agent
+            # Build LangGraph ReAct agent.
             tools   = _build_tools(agent_row.tools or [])
             llm     = LLMFactory.get_llm(
                 agent_row.model, agent_row.provider,
@@ -188,28 +244,27 @@ class AgentExecutor:
             if tools:
                 log.info("agent_tools_enabled", tools=[t.name for t in tools])
 
-            # Persist the user's task before execution
+            # Persist the user's task before execution so history is correct
+            # even if the LLM call fails.
             save_message(db, receiver_id=agent_id, content=task,
                          message_type="user_message")
 
-            # Build message list: system prompt + history + current task
             messages: List[BaseMessage] = (
                 [SystemMessage(content=agent_row.system_prompt)]
                 + history
                 + [HumanMessage(content=task)]
             )
 
-            # Invoke the ReAct graph — the LLM will reason and call tools in a loop
+            # Invoke the ReAct graph — the LLM will reason and call tools in a loop.
             response = agent_graph.invoke(
                 {"messages": messages},
                 config={"recursion_limit": max_iterations},
             )
 
-            # Extract final answer (last AI message)
+            # Extract final answer (last AI message).
             ai_messages = [m for m in response["messages"] if isinstance(m, AIMessage)]
             result = ai_messages[-1].content if ai_messages else ""
 
-            # Count tool call rounds for logging
             tool_calls = sum(
                 1 for m in response["messages"]
                 if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
@@ -217,13 +272,14 @@ class AgentExecutor:
             if tool_calls:
                 log.info("agent_tool_calls", rounds=tool_calls)
 
-            # Sum token usage across all LLM calls in the ReAct loop
+            # Sum token usage across all LLM calls in the ReAct loop.
             tokens = 0
             for msg in response["messages"]:
                 if isinstance(msg, AIMessage) and hasattr(msg, "response_metadata"):
                     usage = (msg.response_metadata or {}).get("token_usage") or {}
                     tokens += usage.get("total_tokens", 0)
             if not tokens:
+                # Fallback estimate when the provider doesn't return usage metadata.
                 tokens = len(result.split()) * 2
 
             cost     = round((tokens / 1000) * COST_PER_1K.get(agent_row.provider, 0.002), 8)
