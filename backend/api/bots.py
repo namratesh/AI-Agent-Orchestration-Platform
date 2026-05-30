@@ -1,11 +1,15 @@
 """
-Named Bot CRUD + channel mapping endpoints.
+Named Bot CRUD and channel mapping endpoints.
 
-Bots are globally configured messaging gateways. Each bot has a name,
-credentials stored in DB, and a set of channel → workflow mappings.
+Bots are globally configured messaging gateways.  Each bot has a name,
+credentials stored in the database, and a set of channel → workflow mappings
+that determine which workflow handles incoming messages.
 
-Telegram bots get a unique webhook URL: /telegram/webhook/{bot_id}
-Slack bots share a single events URL: /slack/events (differentiated by channel_id)
+  Telegram bots  →  unique webhook URL: /telegram/webhook/{bot_id}
+  Slack bots     →  shared events URL: /slack/events (differentiated by channel_id)
+
+Sensitive credential fields (``bot_token``, ``signing_secret``) are masked in
+all read responses so they are never exposed to the frontend after creation.
 """
 from __future__ import annotations
 import copy
@@ -33,7 +37,11 @@ _MASKED = "••••••••••••••••"
 
 
 def _mask_config(config: dict) -> dict:
-    """Return config with sensitive fields masked for list/get responses."""
+    """Return a deep copy of ``config`` with sensitive credential fields replaced by a mask.
+
+    Masking is applied to ``bot_token`` and ``signing_secret`` so that read
+    responses never leak credentials that were submitted at create/update time.
+    """
     masked = copy.deepcopy(config)
     for field in ("bot_token", "signing_secret"):
         if masked.get(field):
@@ -42,6 +50,7 @@ def _mask_config(config: dict) -> dict:
 
 
 def _bot_response(row) -> ChannelBot:
+    """Convert an ORM bot row to a masked Pydantic response model."""
     return ChannelBot(
         id=row.id, name=row.name, channel_type=row.channel_type,
         config=_mask_config(row.config or {}),
@@ -53,11 +62,18 @@ def _bot_response(row) -> ChannelBot:
 
 @router.get("", response_model=List[ChannelBot])
 def list_bots_endpoint(db: Session = Depends(get_db)):
+    """Return all configured bots with credentials masked."""
     return [_bot_response(r) for r in list_bots(db)]
 
 
 @router.post("", response_model=ChannelBot, status_code=201)
 def create_bot_endpoint(payload: BotCreate, db: Session = Depends(get_db)):
+    """Create a new messaging bot.
+
+    Validates that required credentials are present for the given channel type
+    before persisting.  Returns 409 on name collision, 422 on config validation
+    failure.
+    """
     try:
         payload.validate_config()
     except ValueError as exc:
@@ -73,6 +89,10 @@ def create_bot_endpoint(payload: BotCreate, db: Session = Depends(get_db)):
 
 @router.put("/{bot_id}", response_model=ChannelBot)
 def update_bot_endpoint(bot_id: UUID, payload: BotUpdate, db: Session = Depends(get_db)):
+    """Update a bot's name, config, or enabled state.
+
+    Returns 404 if not found, 409 on name collision.
+    """
     if get_bot_by_id(db, bot_id) is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     kwargs = {k: v for k, v in payload.model_dump().items() if v is not None}
@@ -87,6 +107,10 @@ def update_bot_endpoint(bot_id: UUID, payload: BotUpdate, db: Session = Depends(
 
 @router.delete("/{bot_id}", status_code=204)
 def delete_bot_endpoint(bot_id: UUID, db: Session = Depends(get_db)):
+    """Delete a bot and all its channel mappings.
+
+    Returns 404 if not found.
+    """
     if not delete_bot(db, bot_id):
         raise HTTPException(status_code=404, detail="Bot not found")
 
@@ -95,6 +119,7 @@ def delete_bot_endpoint(bot_id: UUID, db: Session = Depends(get_db)):
 
 @router.get("/{bot_id}/telegram-mappings", response_model=List[TelegramChatMapping])
 def list_telegram_mappings(bot_id: UUID, db: Session = Depends(get_db)):
+    """List all Telegram chat → workflow mappings for a bot."""
     if get_bot_by_id(db, bot_id) is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     return [TelegramChatMapping.model_validate(r)
@@ -105,6 +130,11 @@ def list_telegram_mappings(bot_id: UUID, db: Session = Depends(get_db)):
              response_model=TelegramChatMapping, status_code=201)
 def add_telegram_mapping(bot_id: UUID, payload: TelegramChatMappingCreate,
                          db: Session = Depends(get_db)):
+    """Map a Telegram chat ID to a workflow for a specific bot.
+
+    Upserts: if a mapping for ``chat_id`` already exists it is replaced.
+    Returns 404 if the bot or workflow is not found.
+    """
     if get_bot_by_id(db, bot_id) is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     if get_workflow(db, payload.workflow_id) is None:
@@ -117,6 +147,10 @@ def add_telegram_mapping(bot_id: UUID, payload: TelegramChatMappingCreate,
 
 @router.delete("/telegram-mappings/{chat_id}", status_code=204)
 def remove_telegram_mapping(chat_id: str, db: Session = Depends(get_db)):
+    """Remove a Telegram chat mapping by chat ID.
+
+    Returns 404 if not found.
+    """
     if not delete_chat_mapping(db, chat_id):
         raise HTTPException(status_code=404, detail="Mapping not found")
 
@@ -125,6 +159,7 @@ def remove_telegram_mapping(chat_id: str, db: Session = Depends(get_db)):
 
 @router.get("/{bot_id}/slack-mappings", response_model=List[SlackChannelMapping])
 def list_slack_mappings(bot_id: UUID, db: Session = Depends(get_db)):
+    """List all Slack channel → workflow mappings for a bot."""
     if get_bot_by_id(db, bot_id) is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     return [SlackChannelMapping.model_validate(r)
@@ -135,6 +170,10 @@ def list_slack_mappings(bot_id: UUID, db: Session = Depends(get_db)):
              response_model=SlackChannelMapping, status_code=201)
 def add_slack_mapping(bot_id: UUID, payload: SlackMappingCreate,
                       db: Session = Depends(get_db)):
+    """Map a Slack channel to a workflow for a specific bot.
+
+    Returns 404 if the bot or workflow is not found.
+    """
     bot = get_bot_by_id(db, bot_id)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found")
@@ -148,5 +187,9 @@ def add_slack_mapping(bot_id: UUID, payload: SlackMappingCreate,
 
 @router.delete("/slack-mappings/{mapping_id}", status_code=204)
 def remove_slack_mapping(mapping_id: UUID, db: Session = Depends(get_db)):
+    """Remove a Slack channel mapping by mapping ID.
+
+    Returns 404 if not found.
+    """
     if not delete_slack_mapping(db, mapping_id):
         raise HTTPException(status_code=404, detail="Mapping not found")

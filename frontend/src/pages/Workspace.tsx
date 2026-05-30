@@ -6,7 +6,7 @@ import ReactFlow, {
   ConnectionMode, MarkerType,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import {
   Bot, Wrench, Save, X, Network, RefreshCw, Plus, ExternalLink, Pencil,
 } from 'lucide-react'
@@ -188,8 +188,9 @@ function EdgeConditionPopup({ popup, onSave, onClose }: {
         {type !== 'always' && (
           <div>
             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Value</label>
-            <input type="text" value={value} onChange={e => setValue(e.target.value)} placeholder='"error"'
+            <input type="text" value={value} onChange={e => setValue(e.target.value)} placeholder='price, crypto, bitcoin'
               className="w-full text-sm rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <p className="mt-1 text-[10px] text-gray-400">Comma-separated keywords — any match triggers this edge</p>
           </div>
         )}
       </div>
@@ -585,11 +586,40 @@ export default function Workspace() {
   const [agentsLoading, setAgentsLoading] = useState(false)
   const [toolsLoading, setToolsLoading]   = useState(false)
 
+  const location = useLocation()
+
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
   const [workflowName, setWorkflowName] = useState('My Workflow')
   const [isSaving, setIsSaving]         = useState(false)
+
+  // Load resolved template when navigated from Workflows → Templates modal.
+  // Nodes arrive with real agent objects already matched — place them as proper canvas nodes.
+  useEffect(() => {
+    type ResolvedNode = { slotId: string; position: { x: number; y: number }; agent: { id: string; name: string; role: string; model: string; provider: string } }
+    type ResolvedTpl  = { name: string; nodes: ResolvedNode[]; edges: { source: string; target: string }[] }
+    const tpl = (location.state as { resolvedTemplate?: ResolvedTpl } | null)?.resolvedTemplate
+    if (!tpl) return
+    setWorkflowName(tpl.name)
+    // Pre-generate stable canvas IDs so nodes and edges reference the same value
+    const slotToNodeId: Record<string, string> = {}
+    tpl.nodes.forEach(n => { slotToNodeId[n.slotId] = `agent-${n.agent.id}-${Date.now()}` })
+    setNodes(tpl.nodes.map(n => ({
+      id:       slotToNodeId[n.slotId],
+      type:     'agentNode',
+      position: n.position,
+      data:     { name: n.agent.name, role: n.agent.role, model: n.agent.model, provider: n.agent.provider },
+    })))
+    setEdges(tpl.edges.map((e, i) => ({
+      id:     `tpl-edge-${i}`,
+      source: slotToNodeId[e.source] ?? e.source,
+      target: slotToNodeId[e.target] ?? e.target,
+      type:   'smoothstep',
+      data:   { srcType: 'agentNode', tgtType: 'agentNode', condition: { type: 'always' } },
+    })))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const fetchAgents = useCallback(() => {
     setAgentsLoading(true)
@@ -610,6 +640,16 @@ export default function Workspace() {
     if (!workflowName.trim()) { toast.error('Workflow name is required'); return }
     const agentNodes = nodes.filter(n => n.type === 'agentNode')
     if (agentNodes.length === 0) { toast.error('Add at least one agent to the canvas'); return }
+    // Block saving if any agent node still has a placeholder ID (no real agent assigned)
+    const placeholders = agentNodes.filter(n => {
+      const parts = n.id.split('-')
+      const rawId = parts.slice(1, parts.length - 1).join('-')
+      return !isValidUUID(rawId)
+    })
+    if (placeholders.length > 0) {
+      toast.error(`Replace placeholder nodes with real agents before saving: ${placeholders.map(n => n.data.name).join(', ')}`, { duration: 5000 })
+      return
+    }
     setIsSaving(true)
     try {
       const targetIds = new Set(edges.map(e => e.target))

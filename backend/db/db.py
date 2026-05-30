@@ -1,3 +1,19 @@
+"""
+Database layer: SQLAlchemy ORM models, connection pool, and CRUD helpers.
+
+All ORM models map to PostgreSQL tables created by the Alembic migrations.
+CRUD functions follow a consistent pattern:
+  - Receive a ``Session`` from the FastAPI ``get_db`` dependency.
+  - Return ORM instances (not Pydantic models) so callers can validate lazily.
+  - Return ``None`` for single-row lookups that find no match.
+  - Return ``False`` from delete functions when the row does not exist.
+
+Connection pool settings:
+  - ``pool_size=10``: permanent connections kept alive.
+  - ``max_overflow=20``: additional connections allowed under burst load.
+  - ``pool_pre_ping=True``: validates connections before use to recover
+    gracefully from PostgreSQL restarts.
+"""
 from __future__ import annotations
 import uuid
 from datetime import datetime
@@ -165,6 +181,12 @@ class WorkflowIntegrationORM(Base):
 # ── Session dependency ────────────────────────────────────────────────────────
 
 def get_db():
+    """FastAPI dependency that yields a database session and closes it on exit.
+
+    Use with ``Depends(get_db)`` in route handlers.  The session is closed even
+    if the handler raises an exception so connections are always returned to the
+    pool.
+    """
     db = SessionLocal()
     try:
         yield db

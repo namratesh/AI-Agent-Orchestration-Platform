@@ -1,16 +1,27 @@
 """
 Workflow executor: builds a LangGraph StateGraph dynamically from a saved
-workflow definition, then invokes it.  Each AGENT node delegates to
-agent_executor (which itself runs a per-agent LangGraph); each TOOL node
-makes an HTTP call.  Edge conditions are wired through LangGraph's
-add_conditional_edges so routing is handled by the graph, not by a
-hand-rolled BFS loop.
+workflow definition, then invokes it.
+
+Each AGENT node delegates to ``AgentExecutor`` (which itself runs a per-agent
+ReAct LangGraph); each TOOL node makes an HTTP call using the tool's stored
+configuration.  Edge conditions are wired through LangGraph's
+``add_conditional_edges`` so routing is handled declaratively by the graph,
+not by a hand-rolled dispatch loop.
+
+State is accumulated using LangGraph's ``Annotated`` reducer pattern:
+  - ``node_outputs`` merges outputs from parallel branches without conflicts.
+  - ``tokens_used`` and ``cost`` accumulate additively across all nodes.
+
+After each node completes, a checkpoint is written to PostgreSQL and a
+``node_complete`` event is published to Redis so WebSocket subscribers receive
+incremental progress in real time.
 """
 from __future__ import annotations
 
 import time
 import requests as http_requests
-from typing import Any, Dict, List, Optional, TypedDict
+from operator import add
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
 from uuid import UUID
 
 from langgraph.graph import END, StateGraph
@@ -21,6 +32,7 @@ from db.db import (SessionLocal, get_agent, get_tool, get_workflow,
                    patch_execution_progress, save_checkpoint, save_execution, update_execution)
 from instrumentation import record_workflow_execution
 from services.executor import agent_executor
+from services import stream_publisher
 
 logger = get_logger(__name__)
 _tracer = otel_trace.get_tracer(__name__)
@@ -29,23 +41,54 @@ _tracer = otel_trace.get_tracer(__name__)
 # ── Shared state that flows through every node in the graph ───────────────────
 
 class WorkflowState(TypedDict):
-    task: str                    # original user task — never mutated
-    current_output: str          # output of the most-recent node; next node's input
-    node_outputs: Dict[str, str] # accumulated per-node results
-    tokens_used: int             # running total across all agent nodes
-    cost: float                  # running total
+    """Shared mutable state passed between all nodes in a workflow execution.
+
+    Annotated reducers allow parallel branches to merge state without conflicts:
+      - ``node_outputs`` uses dict merge (last writer wins per key).
+      - ``tokens_used`` and ``cost`` use addition.
+    """
+    task: str
+    current_output: str
+    node_outputs: Annotated[Dict[str, str], lambda a, b: {**a, **b}]
+    tokens_used: Annotated[int, add]
+    cost: Annotated[float, add]
 
 
 # ── Edge condition evaluator ──────────────────────────────────────────────────
 
 def _eval_condition(condition: Optional[dict], text: str) -> bool:
+    """Evaluate a workflow edge condition against the current node output.
+
+    Supports the following condition types:
+      - ``always`` (or absent): always true.
+      - ``contains`` / ``not_contains``: comma-separated keyword list; any match
+        is sufficient for ``contains``, any match causes ``not_contains`` to fail.
+      - ``equals`` / ``not_equals``: exact full-value comparison.
+
+    Keywords are stripped of surrounding quotes to allow JSON-style values like
+    ``"price", "crypto"`` entered in the UI.
+
+    Args:
+        condition: Condition dict with ``type`` and ``value`` keys, or None.
+        text: Current node output to test against.
+
+    Returns:
+        True if the condition passes (edge should be followed), False otherwise.
+    """
     if not condition or condition.get("type") == "always":
         return True
     ct  = condition.get("type", "always")
-    val = (condition.get("value") or "").lower().strip()
+    raw = (condition.get("value") or "").strip()
     out = text.lower().strip()
-    if ct == "contains":     return val in out
-    if ct == "not_contains": return val not in out
+
+    keywords = [k.strip().strip('"').strip("'").lower() for k in raw.split(",") if k.strip()]
+    if not keywords:
+        return True
+
+    if ct == "contains":     return any(k in out for k in keywords)
+    if ct == "not_contains": return not any(k in out for k in keywords)
+
+    val = raw.lower()
     if ct == "equals":       return out == val
     if ct == "not_equals":   return out != val
     return True
@@ -55,6 +98,14 @@ def _eval_condition(condition: Optional[dict], text: str) -> bool:
 
 def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str,
                      workflow_id: UUID, execution_id: Optional[UUID]):
+    """Return a LangGraph node function that runs an agent and persists its output.
+
+    The returned function:
+      1. Calls ``AgentExecutor.execute`` with the current workflow output as input.
+      2. Saves a checkpoint to PostgreSQL.
+      3. Patches the execution's ``node_outputs`` column for incremental polling.
+      4. Publishes a ``node_complete`` event to Redis for WebSocket streaming.
+    """
     def _run(state: WorkflowState) -> dict:
         log = logger.bind(trace_id=trace_id, node_id=node_id, agent_id=str(agent_id))
         log.info("agent_node_executing", input_preview=state["current_output"][:120])
@@ -74,6 +125,14 @@ def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str,
         finally:
             db.close()
 
+        if execution_id:
+            stream_publisher.publish(str(execution_id), {
+                "type":    "node_complete",
+                "node_id": node_id,
+                "output":  outcome["result"],
+                "tokens":  outcome["tokens_used"],
+            })
+
         log.info("agent_node_done", tokens=outcome["tokens_used"], cost=outcome["cost"],
                  output_preview=outcome["result"][:120])
 
@@ -89,6 +148,13 @@ def _make_agent_node(node_id: str, agent_id: UUID, trace_id: str,
 
 
 def _make_tool_node(node_id: str, tool, trace_id: str, execution_id: Optional[UUID]):
+    """Return a LangGraph node function that makes an HTTP tool call.
+
+    The upstream agent's output is prepended to the tool's response before
+    passing it downstream.  This gives the next agent the original query
+    alongside the tool result so it can produce a specific, contextual answer
+    rather than summarising only the raw tool output.
+    """
     def _run(state: WorkflowState) -> dict:
         log = logger.bind(trace_id=trace_id, node_id=node_id, tool=tool.name)
         log.info("tool_node_executing", method=tool.method, url=tool.url)
@@ -110,15 +176,24 @@ def _make_tool_node(node_id: str, tool, trace_id: str, execution_id: Optional[UU
             result = f"[Tool error: {exc}]"
             log.warning("tool_node_error", error=str(exc))
 
+        # Prepend the upstream agent's query so the downstream agent knows
+        # which topic was originally requested (enables specific responses).
+        context_output = f"{state['current_output']}\n\n{result}"
+
         if execution_id:
             db = SessionLocal()
             try:
                 patch_execution_progress(db, execution_id, {node_id: result})
             finally:
                 db.close()
+            stream_publisher.publish(str(execution_id), {
+                "type":    "node_complete",
+                "node_id": node_id,
+                "output":  result,
+            })
 
         return {
-            "current_output": result,
+            "current_output": context_output,
             "node_outputs":   {**state["node_outputs"], node_id: result},
         }
 
@@ -127,7 +202,7 @@ def _make_tool_node(node_id: str, tool, trace_id: str, execution_id: Optional[UU
 
 
 def _passthrough(_state: WorkflowState) -> dict:
-    """No-op node for unsupported/unknown node types."""
+    """No-op node for unsupported or misconfigured node types."""
     return {}
 
 
@@ -136,23 +211,29 @@ def _passthrough(_state: WorkflowState) -> dict:
 def _build_langgraph(definition: dict, trace_id: str,
                      workflow_id: UUID, db,
                      execution_id: Optional[UUID] = None) -> Any:
-    """
-    Converts a workflow definition (nodes + edges from the canvas) into a
-    compiled LangGraph StateGraph.
+    """Compile a workflow definition into an executable LangGraph StateGraph.
 
-    Routing rules
-    ─────────────
-    • One outgoing edge, always-condition  → add_edge (simple hop)
-    • Multiple edges or condition present  → add_conditional_edges with a
-      router function that evaluates conditions against current_output in
-      order; first match wins.  Falls through to END if none match.
-    • No outgoing edges                    → terminal; connect to END.
+    Routing rules:
+      - One outgoing edge, always-condition  → ``add_edge`` (simple hop).
+      - Multiple edges or a condition present → ``add_conditional_edges`` with a
+        router closure; first matching condition wins; falls through to END.
+      - No outgoing edges                    → terminal; connected to END.
+
+    Args:
+        definition: Workflow definition dict with ``nodes``, ``edges``, and
+            ``start_node_id`` keys.
+        trace_id: Correlation ID threaded into all node closures.
+        workflow_id: UUID of the workflow; used when saving checkpoints.
+        db: SQLAlchemy session for resolving tool/agent references.
+        execution_id: If set, node outputs are streamed in real time.
+
+    Returns:
+        A compiled LangGraph graph ready for ``.invoke()``.
     """
     nodes_def  = {n["id"]: n for n in definition["nodes"]}
     edges_def  = definition["edges"]
     start_id   = definition["start_node_id"]
 
-    # Build source → [edge] adjacency
     outgoing: Dict[str, List[dict]] = {}
     for edge in edges_def:
         outgoing.setdefault(edge["source_node_id"], []).append(edge)
@@ -167,11 +248,9 @@ def _build_langgraph(definition: dict, trace_id: str,
             fn = _make_agent_node(
                 nid, UUID(str(ndf["agent_id"])), trace_id, workflow_id, execution_id
             )
-
         elif ntype == "TOOL" and ndf.get("tool_id"):
             tool_row = get_tool(db, UUID(str(ndf["tool_id"])))
             fn = _make_tool_node(nid, tool_row, trace_id, execution_id) if tool_row else _passthrough
-
         else:
             fn = _passthrough
 
@@ -191,7 +270,6 @@ def _build_langgraph(definition: dict, trace_id: str,
         if is_simple:
             graph.add_edge(nid, out_edges[0]["target_node_id"])
         else:
-            # Conditional routing — build a router closure over this node's edges
             def _make_router(edges: List[dict]):
                 def _router(state: WorkflowState) -> str:
                     out = state["current_output"]
@@ -215,7 +293,23 @@ def _build_langgraph(definition: dict, trace_id: str,
 # ── Pre-flight validation ─────────────────────────────────────────────────────
 
 def validate_workflow_definition(db, defn: dict) -> list[str]:
-    """Return a list of error strings; empty list means the definition is valid."""
+    """Validate a workflow definition against the database before execution.
+
+    Checks that:
+      - The definition contains at least one node.
+      - ``start_node_id`` references an existing node.
+      - Every AGENT node has a valid ``agent_id`` that exists in the database.
+      - Every TOOL node has a valid ``tool_id`` that exists in the database.
+      - All edge source/target node IDs reference existing nodes.
+
+    Args:
+        db: SQLAlchemy session.
+        defn: Workflow definition dict.
+
+    Returns:
+        A list of human-readable error strings.  An empty list means the
+        definition is valid and safe to execute.
+    """
     errors: list[str] = []
     nodes = defn.get("nodes", [])
     edges = defn.get("edges", [])
@@ -268,10 +362,42 @@ def validate_workflow_definition(db, defn: dict) -> list[str]:
 # ── Public executor class ─────────────────────────────────────────────────────
 
 class WorkflowExecutor:
+    """Executes a workflow end-to-end and persists the result.
+
+    Manages the full execution lifecycle:
+      1. Load the workflow definition from the database.
+      2. Build and compile the LangGraph StateGraph.
+      3. Invoke the graph with the user's task as the initial input.
+      4. Persist the execution record (or update an existing queued record).
+      5. Publish a final ``done`` event to Redis for WebSocket subscribers.
+      6. Record OTel spans and Prometheus metrics.
+    """
+
     @_tracer.start_as_current_span("workflow_execute")
     def execute(self, workflow_id: UUID, task: str, trace_id: str,
                 source: str = "ui",
                 existing_execution_id: Optional[UUID] = None) -> Dict[str, Any]:
+        """Run a workflow and return its result.
+
+        Args:
+            workflow_id: UUID of the workflow to execute.
+            task: Natural language task description passed as the initial input.
+            trace_id: Correlation ID for OTel spans and log entries.
+            source: Originating source label (``"ui"``, ``"slack"``, ``"telegram"``,
+                ``"scheduled"``).
+            existing_execution_id: If set, updates the pre-created execution record
+                instead of creating a new one.  Used by the async dispatch path so
+                the client has an ID to poll before execution starts.
+
+        Returns:
+            dict with keys: ``result``, ``workflow_id``, ``tokens_used``, ``cost``,
+            ``execution_id``, ``execution_time_seconds``, ``node_outputs``.
+
+        Raises:
+            ValueError: If the workflow is not found.
+            Exception: Any unhandled error from a node; error status is persisted
+                before re-raising so the caller doesn't need to handle DB cleanup.
+        """
         span = otel_trace.get_current_span()
         span.set_attribute("workflow_id", str(workflow_id))
         span.set_attribute("trace_id", trace_id)
@@ -295,7 +421,6 @@ class WorkflowExecutor:
                      tool_nodes=tool_count,
                      edges=len(defn["edges"]))
 
-            # Build and compile the LangGraph for this workflow
             compiled = _build_langgraph(defn, trace_id, workflow_id, db, existing_execution_id)
 
             initial_state: WorkflowState = {
@@ -343,6 +468,17 @@ class WorkflowExecutor:
                      result_preview=result[:120],
                      node_outputs_count=len(node_outputs))
 
+            if existing_execution_id:
+                stream_publisher.publish(str(existing_execution_id), {
+                    "type":        "done",
+                    "status":      "success",
+                    "result":      result,
+                    "node_outputs": node_outputs,
+                    "tokens_used": tokens,
+                    "cost":        cost,
+                    "elapsed":     round(elapsed, 3),
+                })
+
             record_workflow_execution(status="success")
 
             return {
@@ -372,6 +508,13 @@ class WorkflowExecutor:
                     execution_time_seconds=elapsed, source=source,
                     error_message=err_msg,
                 )
+            if existing_execution_id:
+                stream_publisher.publish(str(existing_execution_id), {
+                    "type":   "done",
+                    "status": "error",
+                    "error":  err_msg,
+                })
+
             record_workflow_execution(status="error")
             log.error("workflow_failed", error=err_msg)
             raise

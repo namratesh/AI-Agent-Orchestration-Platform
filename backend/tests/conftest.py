@@ -1,10 +1,14 @@
 """Shared fixtures for the test suite.
 
-Uses SQLite in-memory so tests run without a live PostgreSQL instance.
+Uses SQLite in-memory so tests run without a live PostgreSQL or Redis instance.
 SQLite doesn't support JSONB; we register a custom compilation rule so that
 JSONB columns are rendered as JSON when the SQLite dialect is used.
+
+Startup-time side-effects (seed_demo_data, setup_otel, scheduler) are patched
+out so the test suite has no external service dependencies.
 """
 from __future__ import annotations
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,7 +41,17 @@ _TestingSessionLocal = sessionmaker(bind=_engine, autocommit=False, autoflush=Fa
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _create_tables():
+def _patch_startup():
+    """Prevent startup hooks from touching real PostgreSQL, Redis, or OTel."""
+    with patch("db.seed.seed_demo_data", return_value=None), \
+         patch("instrumentation.setup_otel", return_value=None), \
+         patch("services.scheduler.start", return_value=None), \
+         patch("services.scheduler.stop", return_value=None):
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _create_tables(_patch_startup):
     Base.metadata.create_all(bind=_engine)
     yield
     Base.metadata.drop_all(bind=_engine)

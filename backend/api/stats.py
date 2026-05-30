@@ -1,3 +1,11 @@
+"""
+Platform statistics API router.
+
+Provides a single aggregated endpoint that the dashboard uses to populate
+summary cards and the recent executions list.  All values are computed from
+live database queries — there is no caching layer — so the dashboard always
+reflects the current state.
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -12,6 +20,16 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 
 @router.get("", response_model=StatsResponse)
 def get_stats(db: Session = Depends(get_db)):
+    """Return aggregated platform statistics for the dashboard.
+
+    Returns:
+        StatsResponse containing:
+          - ``total_agents``: number of configured agents.
+          - ``total_workflows``: number of configured workflows.
+          - ``executions_today``: count of executions started since UTC midnight.
+          - ``cost_this_month``: total LLM cost (USD) accumulated this calendar month.
+          - ``recent_executions``: the 5 most recent execution records.
+    """
     agents = list_agents(db)
     workflows = list_workflows(db)
     executions_today = count_executions_today(db)

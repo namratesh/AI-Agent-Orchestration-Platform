@@ -1,12 +1,24 @@
 """
 Slack Events API receiver.
 
-Flow:
-  1. Admin creates a named Slack bot in Settings, enters bot_token + signing_secret.
-  2. Admin registers {host}/slack/events as the Events API URL in their Slack app.
-  3. Admin adds channel → workflow mappings for the bot.
-  4. End users message the Slack channel — Slack POSTs here.
-  5. We verify signature, find the mapping, run the workflow, reply via chat.postMessage.
+Inbound message flow:
+  1. Admin creates a Named Slack Bot in Settings, providing ``bot_token`` and
+     ``signing_secret``.
+  2. Admin registers ``{host}/slack/events`` as the Events API URL in the
+     Slack app's Event Subscriptions settings.
+  3. Admin adds ``channel_id → workflow`` mappings for the bot via
+     ``POST /bots/{bot_id}/slack-mappings``.
+  4. End users post messages in the mapped Slack channel.
+  5. Slack POSTs to this endpoint with an HMAC-signed payload.
+  6. Signature is verified, the workflow is dispatched in the background, and
+     the result is posted back to the channel via ``chat.postMessage``.
+
+Security:
+  - HMAC-SHA256 signature verification guards against spoofed requests.
+  - Requests with a timestamp older than 5 minutes are rejected to prevent
+    replay attacks.
+  - The ``bot_id`` header check is omitted (Slack doesn't send one); instead
+    the channel_id is used to identify the correct bot and its signing secret.
 """
 from __future__ import annotations
 
@@ -33,6 +45,20 @@ logger = get_logger(__name__)
 
 def _verify_signature(body_bytes: bytes, timestamp: str, signature: str,
                       signing_secret: str) -> bool:
+    """Verify the Slack request signature using HMAC-SHA256.
+
+    Rejects requests whose timestamp differs from the server clock by more than
+    5 minutes to protect against replay attacks.
+
+    Args:
+        body_bytes: Raw request body bytes.
+        timestamp: Value of the ``X-Slack-Request-Timestamp`` header.
+        signature: Value of the ``X-Slack-Signature`` header.
+        signing_secret: Bot signing secret from the Slack app settings.
+
+    Returns:
+        True if the signature is valid and fresh, False otherwise.
+    """
     try:
         if abs(time.time() - int(timestamp)) > 300:
             return False
@@ -51,6 +77,19 @@ def _verify_signature(body_bytes: bytes, timestamp: str, signature: str,
 
 def _run_and_reply(workflow_id: str, task: str, channel_id: str,
                    bot_token: str, thread_ts: Optional[str]) -> None:
+    """Execute a workflow and post the result back to Slack.
+
+    Runs in a FastAPI BackgroundTask so the Events endpoint can return 200
+    immediately (Slack requires a response within 3 seconds).  Any workflow
+    error is caught and reported to the channel so the user receives feedback.
+
+    Args:
+        workflow_id: UUID string of the workflow to execute.
+        task: The message text from the Slack user, used as the workflow input.
+        channel_id: Slack channel to reply to.
+        bot_token: ``xoxb-…`` token for ``chat.postMessage`` calls.
+        thread_ts: Thread timestamp to keep the reply in the same thread.
+    """
     trace_id = str(uuid.uuid4())
     try:
         outcome = workflow_executor.execute(
@@ -65,6 +104,18 @@ def _run_and_reply(workflow_id: str, task: str, channel_id: str,
 
 def _post_message(bot_token: str, channel_id: str, text: str,
                   thread_ts: Optional[str] = None) -> None:
+    """Post a message to a Slack channel via the Web API.
+
+    Truncates text to 40 000 characters (Slack's per-message limit).
+    Errors are logged as warnings but not re-raised so a send failure does not
+    propagate back to the caller.
+
+    Args:
+        bot_token: ``xoxb-…`` bearer token.
+        channel_id: Target Slack channel.
+        text: Message body.
+        thread_ts: If set, the reply is posted within this thread.
+    """
     payload: dict = {"channel": channel_id, "text": text[:40000]}
     if thread_ts:
         payload["thread_ts"] = thread_ts
@@ -88,6 +139,19 @@ def _post_message(bot_token: str, channel_id: str, text: str,
 @router.post("/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks,
                        db: Session = Depends(get_db)):
+    """Receive and process Slack Events API payloads.
+
+    Handles:
+      - URL verification challenge (``type: url_verification``) sent once when
+        the Events URL is registered in the Slack app settings.
+      - ``message`` events for channels that have a bot mapping configured.
+
+    Bot messages, message edits with subtypes, and messages without a channel
+    mapping are silently acknowledged (returning ``{"ok": True}``) so Slack
+    does not retry them.
+
+    Returns 400 on malformed JSON, 403 on invalid HMAC signature.
+    """
     body_bytes = await request.body()
     try:
         body = json.loads(body_bytes)
@@ -123,7 +187,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks,
     signing_secret = cfg.get("signing_secret", "")
     bot_token      = cfg.get("bot_token", "")
 
-    # Verify HMAC signature
+    # Verify HMAC signature — skip only if no signing_secret is configured.
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
     if signing_secret and not _verify_signature(body_bytes, timestamp, signature, signing_secret):
