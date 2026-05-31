@@ -35,6 +35,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: backend
+    # Override the production CMD (start.sh) so local dev uses --reload
+    # and doesn't spawn a second RQ worker (the 'worker' service handles that).
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     env_file:
