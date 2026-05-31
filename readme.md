@@ -142,8 +142,10 @@ docker exec -i postgres psql -U postgres -d agent_db < migrations/002_executions
 docker exec -i postgres psql -U postgres -d agent_db < migrations/003_tools.sql
 docker exec -i postgres psql -U postgres -d agent_db < migrations/004_node_outputs.sql
 docker exec -i postgres psql -U postgres -d agent_db < migrations/005_schedules.sql
-docker exec -i postgres psql -U postgres -d agent_db < migrations/006_slack.sql
+docker exec -i postgres psql -U postgres -d agent_db < migrations/006_channel_integrations.sql
 docker exec -i postgres psql -U postgres -d agent_db < migrations/007_channel_bots.sql
+docker exec -i postgres psql -U postgres -d agent_db < migrations/008_execution_error_field.sql
+docker exec -i postgres psql -U postgres -d agent_db < migrations/009_unique_names.sql
 ```
 
 All migrations use `IF NOT EXISTS` — safe to re-run.
@@ -200,7 +202,8 @@ The sidebar follows the natural build → run → observe journey:
 | `/workflows` | Workflows | List of saved workflows — templates, inline run with real-time streaming panel, schedule manager, delete |
 | `/executor` | Executor | Pick a workflow, enter a task, watch execution with live node-by-node progress over WebSocket |
 | `/history` | Execution History | Sortable/filterable table, inter-agent message trace in detail modal, CSV export |
-| `/settings` | Settings | API key viewer, Telegram/Slack mappings, links to Grafana / Jaeger / Prometheus |
+| `/logs` | Execution Logs | Live structured log stream over WebSocket — pause/resume, filter by level, download as JSON |
+| `/settings` | Settings | API key viewer, Named Bot management (Telegram/Slack), links to Grafana / Jaeger / Prometheus |
 
 ---
 
@@ -431,21 +434,40 @@ curl -s -X DELETE $BASE/schedules/<sched-id>
 
 Any message sent to the bot fires the mapped workflow with the message text as the task. The agent's response is sent back to the chat. The webhook is validated using `X-Telegram-Bot-Api-Secret-Token`.
 
+### Named Bot setup (recommended)
+
+The platform uses **Named Bots** — each bot has its own credentials and webhook URL, so you can run multiple Telegram bots on one instance.
+
+1. In the UI (`/settings`), go to **Bots → Add Bot**, choose channel type `Telegram`, paste the token, and save. Note the **Bot ID** (UUID).
+2. Register the per-bot webhook:
+   ```bash
+   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+     -d "url=https://<your-host>/telegram/webhook/<BOT_ID>"
+   ```
+3. Under **Bots → [Your Bot] → Telegram Mappings**, map a chat ID to a workflow.
+
 ### Mapping API
 
 ```bash
 BASE=http://localhost:8000
 
-# Create mapping
-curl -s -X POST $BASE/telegram/mappings \
+# List all bots
+curl -s $BASE/bots | jq .
+
+# Create a bot
+curl -s -X POST $BASE/bots -H "Content-Type: application/json" \
+  -d '{"name": "My Bot", "channel_type": "telegram", "config": {"bot_token": "<TOKEN>"}}' | jq .
+
+# List telegram mappings for a bot
+curl -s $BASE/bots/<bot-id>/telegram-mappings | jq .
+
+# Create a mapping
+curl -s -X POST $BASE/bots/<bot-id>/telegram-mappings \
   -H "Content-Type: application/json" \
   -d '{"chat_id": "123456789", "workflow_id": "<wf-id>", "username": "alice"}' | jq .
 
-# List mappings
-curl -s $BASE/telegram/mappings | jq .
-
-# Delete mapping
-curl -s -X DELETE $BASE/telegram/mappings/123456789
+# Delete a mapping
+curl -s -X DELETE $BASE/bots/telegram-mappings/123456789
 ```
 
 ---
@@ -468,21 +490,27 @@ curl -s -X DELETE $BASE/telegram/mappings/123456789
 
 Incoming Slack events are verified with HMAC-SHA256 using `SLACK_SIGNING_SECRET`. When a message arrives in a mapped channel, the workflow fires with the message text as the task. The agent response is posted back to the same channel via the Slack Web API.
 
+### Named Bot setup (recommended)
+
+1. In the UI (`/settings`), go to **Bots → Add Bot**, choose channel type `Slack`, paste the bot token and signing secret, and save.
+2. Set the **Request URL** in your Slack app's Event Subscriptions to `https://<your-host>/slack/events`.
+3. Under **Bots → [Your Slack Bot] → Slack Mappings**, map a channel ID to a workflow.
+
 ### Mapping API
 
 ```bash
 BASE=http://localhost:8000
 
-# Create mapping
-curl -s -X POST $BASE/slack/mappings \
+# List slack mappings for a bot
+curl -s $BASE/bots/<bot-id>/slack-mappings | jq .
+
+# Create a mapping
+curl -s -X POST $BASE/bots/<bot-id>/slack-mappings \
   -H "Content-Type: application/json" \
   -d '{"channel_id": "C01234567", "workflow_id": "<wf-id>"}' | jq .
 
-# List mappings
-curl -s $BASE/slack/mappings | jq .
-
-# Delete mapping
-curl -s -X DELETE $BASE/slack/mappings/C01234567
+# Delete a mapping
+curl -s -X DELETE $BASE/bots/slack-mappings/<mapping-id>
 ```
 
 ---
@@ -716,19 +744,41 @@ curl -s -X DELETE $BASE/executions/<id>
 
 curl -s $BASE/stats | jq .
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
+# ── Named Bots ────────────────────────────────────────────────────────────────
 
-curl -s $BASE/telegram/mappings | jq .
-curl -s -X POST $BASE/telegram/mappings -H "Content-Type: application/json" \
+curl -s $BASE/bots | jq .
+
+curl -s -X POST $BASE/bots -H "Content-Type: application/json" \
+  -d '{"name": "My Telegram Bot", "channel_type": "telegram", "config": {"bot_token": "<TOKEN>"}}' | jq .
+
+curl -s -X PUT $BASE/bots/<bot-id> -H "Content-Type: application/json" \
+  -d '{"enabled": false}' | jq .
+
+curl -s -X DELETE $BASE/bots/<bot-id>
+
+# Telegram mappings (scoped to a bot)
+curl -s $BASE/bots/<bot-id>/telegram-mappings | jq .
+curl -s -X POST $BASE/bots/<bot-id>/telegram-mappings -H "Content-Type: application/json" \
   -d '{"chat_id": "123456789", "workflow_id": "<wf-id>", "username": "alice"}' | jq .
-curl -s -X DELETE $BASE/telegram/mappings/123456789
+curl -s -X DELETE $BASE/bots/telegram-mappings/123456789
 
-# ── Slack ─────────────────────────────────────────────────────────────────────
-
-curl -s $BASE/slack/mappings | jq .
-curl -s -X POST $BASE/slack/mappings -H "Content-Type: application/json" \
+# Slack mappings (scoped to a bot)
+curl -s $BASE/bots/<bot-id>/slack-mappings | jq .
+curl -s -X POST $BASE/bots/<bot-id>/slack-mappings -H "Content-Type: application/json" \
   -d '{"channel_id": "C01234567", "workflow_id": "<wf-id>"}' | jq .
-curl -s -X DELETE $BASE/slack/mappings/C01234567
+curl -s -X DELETE $BASE/bots/slack-mappings/<mapping-id>
+
+# ── Workflow Integrations (outbound-only channel push) ────────────────────────
+
+curl -s $BASE/workflows/<wf-id>/integrations | jq .
+
+curl -s -X POST $BASE/workflows/<wf-id>/integrations -H "Content-Type: application/json" \
+  -d '{"channel_type": "telegram", "config": {"bot_token": "<TOKEN>", "chat_id": "123456789"}, "enabled": true}' | jq .
+
+curl -s -X PUT $BASE/integrations/<int-id> -H "Content-Type: application/json" \
+  -d '{"enabled": false}' | jq .
+
+curl -s -X DELETE $BASE/integrations/<int-id>
 ```
 
 ---
@@ -808,16 +858,17 @@ Log format:
 
 | Table | Purpose |
 |---|---|
-| `agents` | Agent config: name, role, system\_prompt, model, provider, tools, `config` JSONB |
-| `workflows` | Workflow definition DAG: `definition` JSONB (nodes + edges) |
-| `tools` | HTTP API tool definitions with encrypted `api_key` |
+| `agents` | Agent config: name, role, system\_prompt, model, provider, tools, `config` JSONB. Unique name constraint. |
+| `workflows` | Workflow definition DAG: `definition` JSONB (nodes + edges). Unique name constraint. |
+| `tools` | HTTP API tool definitions with encrypted `api_key`. Unique name constraint. |
 | `messages` | Agent conversation history (`user_message` / `agent_response` per turn) |
-| `workflow_executions` | Execution metadata: status, cost, tokens, elapsed, `node_outputs` JSONB, result |
+| `workflow_executions` | Execution metadata: status, cost, tokens, elapsed, `node_outputs` JSONB, result, `error_message` |
 | `workflow_execution_checkpoints` | Per-step state snapshots for each node in a workflow run |
-| `telegram_chat_mappings` | Maps Telegram `chat_id` to a `workflow_id` |
-| `slack_channel_mappings` | Maps Slack `channel_id` to a `workflow_id` |
+| `telegram_chat_mappings` | Maps Telegram `chat_id` → `workflow_id`, scoped to a `bot_id` |
+| `slack_channel_mappings` | Maps Slack `channel_id` → `workflow_id`, scoped to a `bot_id` |
 | `workflow_schedules` | Schedule config: cron expression or interval, task text, enabled flag, last/next run time |
-| `channel_bots` | Bot-to-channel routing config for multi-bot setups |
+| `channel_bots` | Named Bot credentials and config for Telegram/Slack (unique name constraint) |
+| `workflow_integrations` | Outbound-only channel push config scoped to a workflow (distinct from Named Bots) |
 
 Useful queries:
 
@@ -852,21 +903,27 @@ docker exec postgres psql -U postgres -d agent_db \
 ├── docker-compose.yml
 ├── .env.example
 ├── prometheus.yml
-├── architecture.md              # Mermaid system diagram + sequence diagram
+├── DEPLOY_ORACLE_CLOUD.md       # Full Oracle Cloud deployment guide
+├── documents/
+│   ├── architecture.md          # C4 Mermaid diagrams + sequence diagrams
+│   └── tools-diagram.md         # Tool node wiring diagram
 ├── migrations/
 │   ├── 001_init.sql             # agents, workflows, messages, checkpoints, telegram
 │   ├── 002_executions.sql       # workflow_executions table
 │   ├── 003_tools.sql            # tools table
 │   ├── 004_node_outputs.sql     # node_outputs JSONB column
 │   ├── 005_schedules.sql        # workflow_schedules table
-│   ├── 006_slack.sql            # slack_channel_mappings table
-│   └── 007_channel_bots.sql     # channel_bots table
+│   ├── 006_channel_integrations.sql  # workflow_integrations + slack_channel_mappings
+│   ├── 007_channel_bots.sql     # channel_bots table
+│   ├── 008_execution_error_field.sql # error_message column on workflow_executions
+│   └── 009_unique_names.sql     # unique name constraints on agents, workflows, tools, bots
 ├── grafana/
 │   └── provisioning/            # auto-provisioned datasource + dashboard JSON
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py                  # FastAPI app, routers, startup/shutdown hooks
+│   ├── worker_main.py           # RQ worker entry point (OTel init + rq.Worker)
 │   ├── core/
 │   │   ├── config.py            # Pydantic settings (reads .env)
 │   │   ├── auth.py              # API key auth dependency
@@ -882,10 +939,13 @@ docker exec postgres psql -U postgres -d agent_db \
 │   │   ├── schedules.py         # GET/POST /workflows/:id/schedules, PUT/DELETE /schedules/:id
 │   │   ├── executions.py        # GET/DELETE /executions
 │   │   ├── execution_stream.py  # WebSocket /ws/executions/:id (real-time streaming)
+│   │   ├── logs.py              # WebSocket /ws/logs (live structured log stream)
 │   │   ├── tools.py             # CRUD /tools, POST /tools/:id/test
-│   │   ├── telegram.py          # POST /telegram/webhook, CRUD /telegram/mappings
-│   │   ├── slack.py             # POST /slack/events, CRUD /slack/mappings
-│   │   ├── bots.py              # Bot routing config
+│   │   ├── telegram.py          # POST /telegram/webhook/{bot_id}
+│   │   ├── slack.py             # POST /slack/events
+│   │   ├── bots.py              # CRUD /bots, telegram/slack mappings per bot
+│   │   ├── integrations.py      # Outbound workflow integrations /workflows/:id/integrations
+│   │   ├── seed.py              # POST /seed — seed demo data
 │   │   └── stats.py             # GET /stats
 │   ├── services/
 │   │   ├── executor.py          # Single-agent ReAct executor (create_react_agent + @tool)
@@ -896,12 +956,15 @@ docker exec postgres psql -U postgres -d agent_db \
 │   │   ├── scheduler.py         # APScheduler BackgroundScheduler service
 │   │   ├── crypto.py            # Fernet encryption for tool API keys
 │   │   ├── telegram_handler.py  # Telegram webhook handler
+│   │   ├── channel_notifier.py  # Outbound channel notification after workflow completion
 │   │   └── log_broadcaster.py   # WebSocket log broadcasting
 │   ├── instrumentation.py       # OpenTelemetry setup (OTLP → Jaeger, Prometheus)
 │   └── tests/
 │       ├── conftest.py          # SQLite fixtures + startup patches (no real DB needed)
 │       ├── test_agents.py       # Agent CRUD + execute endpoint tests
 │       ├── test_workflows.py    # Workflow CRUD + execute endpoint tests
+│       ├── test_bots.py         # Bot CRUD + Telegram/Slack mapping endpoint tests
+│       ├── test_slack_webhook.py    # Slack Events API webhook + HMAC verification tests
 │       ├── test_queue_dispatch.py   # RQ dispatch, retry config, BackgroundTasks fallback
 │       └── test_tavily_trim.py      # Query trimming and Tavily error handling
 └── frontend/
@@ -912,11 +975,15 @@ docker exec postgres psql -U postgres -d agent_db \
         ├── types/
         │   └── index.ts         # Shared TypeScript interfaces
         ├── components/
+        │   ├── AgentCard.tsx
+        │   ├── AnimatedChart.tsx
+        │   ├── Header.tsx
         │   ├── LoadingSpinner.tsx
         │   ├── Modal.tsx
         │   ├── Sidebar.tsx
+        │   ├── StatsCard.tsx
         │   ├── WorkflowCard.tsx
-        │   └── ...
+        │   └── WorkflowViewer.tsx
         └── pages/
             ├── Dashboard.tsx         # Stats + charts
             ├── AgentBuilder.tsx      # Agent CRUD with advanced config
@@ -925,7 +992,8 @@ docker exec postgres psql -U postgres -d agent_db \
             ├── WorkflowBuilder.tsx   # Workflow list + WebSocket execution panel + templates
             ├── WorkflowExecutor.tsx  # Async execution with progress bar
             ├── ExecutionHistory.tsx  # Table + inter-agent trace modal + CSV export
-            └── Settings.tsx         # API keys + Telegram/Slack mappings + monitoring links
+            ├── ExecutionLogs.tsx     # Live structured log stream (WebSocket /ws/logs)
+            └── Settings.tsx         # Named Bot management + API keys + monitoring links
 ```
 
 ---

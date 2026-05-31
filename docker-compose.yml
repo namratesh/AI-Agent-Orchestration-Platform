@@ -56,7 +56,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: worker
-    command: rq worker executions --url redis://redis:6379
+    command: python worker_main.py
     env_file:
       - .env
     environment:

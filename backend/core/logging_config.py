@@ -15,19 +15,47 @@ Processor chain (applied in order):
   5. Broadcast to WebSocket subscribers.
   6. Serialize to JSON.
 """
+import json
 import logging
+import os
 import structlog
 from core.config import settings
+
+_LOG_CHANNEL = "platform:logs"
+
+# Lazy Redis client used only in the worker process (no asyncio loop).
+_redis_pub = None
+
+
+def _get_redis_pub():
+    global _redis_pub
+    if _redis_pub is None:
+        import redis as _redis
+        _redis_pub = _redis.Redis.from_url(os.getenv("REDIS_URL", settings.REDIS_URL))
+    return _redis_pub
 
 
 def _ws_broadcast(logger, method, event_dict):
     """structlog processor — forward every log event to the WebSocket broadcaster.
 
-    Imported lazily to avoid a circular import at module load time (logging_config
-    is imported by many modules; log_broadcaster imports nothing from core).
+    In the backend process (asyncio loop available): broadcasts directly via
+    LogBroadcaster so WebSocket clients receive the event in-process.
+
+    In the worker process (no asyncio loop): publishes the event to the Redis
+    pub/sub channel ``platform:logs`` so the backend relay task picks it up.
     """
     from services.log_broadcaster import log_broadcaster
-    log_broadcaster.broadcast(dict(event_dict))
+    if log_broadcaster._loop is not None:
+        # Backend process — broadcast directly.
+        log_broadcaster.broadcast(dict(event_dict))
+    else:
+        # Worker process — publish to Redis for the backend relay.
+        try:
+            _get_redis_pub().publish(
+                _LOG_CHANNEL, json.dumps(dict(event_dict), default=str)
+            )
+        except Exception:
+            pass
     return event_dict
 
 

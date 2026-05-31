@@ -87,8 +87,8 @@ graph TD
     subgraph BACK["backend — FastAPI :8000"]
         MW["Middleware\nTrace ID header · API key auth"]
 
-        subgraph ROUTERS["Routers — 10 total"]
-            CRUD_R["CRUD\n/agents /workflows /tools\n/executions /schedules /stats /bots /seed"]
+        subgraph ROUTERS["Routers — 13 total"]
+            CRUD_R["CRUD\n/agents /workflows /tools /executions\n/schedules /stats /bots /integrations /seed"]
             HOOK_R["Webhooks  no auth\n/telegram/webhook/{bot_id}\n/slack/events"]
             WS_R["WebSocket  no auth\n/ws/executions/:id\n/ws/logs"]
         end
@@ -248,6 +248,7 @@ graph LR
         WFB_P["WorkflowBuilder"]
         EXEC_P["WorkflowExecutor"]
         HIST_P["ExecutionHistory"]
+        LOGS_P["ExecutionLogs"]
         SET_P["Settings"]
     end
 
@@ -262,7 +263,9 @@ graph LR
         EX_EP["GET DELETE /executions"]
         SCHED_EP["GET POST PUT DELETE /schedules"]
         WS_EP2["WS /ws/executions/:id"]
+        WS_LOGS["WS /ws/logs"]
         BOT_EP["CRUD /bots\n/bots/:id/telegram-mappings\n/bots/:id/slack-mappings"]
+        INT_EP["CRUD /workflows/:id/integrations"]
         SEED_EP["POST /seed"]
     end
 
@@ -283,7 +286,9 @@ graph LR
     EXEC_P  --> WF_RUN
     EXEC_P  --> WS_EP2
     HIST_P  --> EX_EP
+    LOGS_P  --> WS_LOGS
     SET_P   --> BOT_EP
+    SET_P   --> INT_EP
 ```
 
 ---
@@ -412,6 +417,7 @@ erDiagram
         string  task
         string  status
         text    result
+        text    error_message
         int     tokens_used
         numeric cost
         jsonb   node_outputs
@@ -453,6 +459,13 @@ erDiagram
         uuid    workflow_id  FK
         uuid    bot_id       FK
     }
+    workflow_integrations {
+        uuid    id           PK
+        uuid    workflow_id  FK
+        string  channel_type
+        jsonb   config
+        boolean enabled
+    }
 
     agents              ||--o{ messages                        : "sends / receives"
     workflows           ||--o{ workflow_executions             : "has many"
@@ -463,6 +476,7 @@ erDiagram
     workflow_executions ||--o{ workflow_execution_checkpoints  : "has many"
     channel_bots        ||--o{ telegram_chat_mappings          : "owns"
     channel_bots        ||--o{ slack_channel_mappings          : "owns"
+    workflows           ||--o{ workflow_integrations            : "has outbound integrations"
 ```
 
 ---
