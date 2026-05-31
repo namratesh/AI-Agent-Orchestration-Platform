@@ -39,15 +39,15 @@ _agent_duration = None
 _workflow_executions = None
 
 
-def setup_otel(app, engine) -> None:
+def setup_otel(app=None, engine=None) -> None:
     """Initialise OTel tracing, metrics, and auto-instrumentation.
 
-    Must be called once during application startup after the FastAPI ``app``
-    instance and SQLAlchemy ``engine`` are created.
+    Can be called from both the FastAPI process (pass app + engine) and the
+    RQ worker process (pass engine only — FastAPI instrumentation is skipped).
 
     Args:
-        app: The FastAPI application instance to instrument.
-        engine: The SQLAlchemy engine to instrument for DB span generation.
+        app: The FastAPI application instance to instrument (optional).
+        engine: The SQLAlchemy engine to instrument for DB span generation (optional).
     """
     global _agent_executions, _agent_tokens, _agent_cost, _agent_duration, _workflow_executions
 
@@ -83,10 +83,11 @@ def setup_otel(app, engine) -> None:
         "workflow_executions", description="Total workflow executions"
     )
 
-    # Auto-instrumentation patches apply monkey-patches at import time.
-    FastAPIInstrumentor.instrument_app(app)
+    if app is not None:
+        FastAPIInstrumentor.instrument_app(app)
     RequestsInstrumentor().instrument()
-    SQLAlchemyInstrumentor().instrument(engine=engine)
+    if engine is not None:
+        SQLAlchemyInstrumentor().instrument(engine=engine)
 
 
 def record_agent_execution(

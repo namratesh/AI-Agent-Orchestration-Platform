@@ -17,7 +17,7 @@ lib/
 lib64/
 *.pyo
 *.pyd
-
+work.md
 # Virtual environments
 .env
 .venv
